@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Magen David on deep indigo background -->
+  <rect width="32" height="32" rx="7" fill="#4f46e5"/>
+  <!-- Upward-pointing triangle -->
+  <polygon points="16,4 28.5,25 3.5,25" fill="none" stroke="white" stroke-width="2" stroke-linejoin="round"/>
+  <!-- Downward-pointing triangle -->
+  <polygon points="16,28 3.5,7 28.5,7" fill="none" stroke="white" stroke-width="2" stroke-linejoin="round"/>
+</svg>
