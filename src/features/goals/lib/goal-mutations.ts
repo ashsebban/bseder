@@ -1,6 +1,18 @@
 import type { Goal } from "@/features/goals/types/goal";
 
 /**
+ * When a child goal's calendar assignment is completed/uncompleted, feed the
+ * delta back to the parent one-time goal's `current` progress counter.
+ * @param delta  positive = adding progress, negative = removing
+ */
+export function updateParentProgress(goals: Goal[], parentGoalId: string, delta: number): Goal[] {
+  return goals.map((g) => {
+    if (g.id !== parentGoalId) return g;
+    return { ...g, current: Math.max(0, (g.current ?? 0) + delta) };
+  });
+}
+
+/**
  * Canonical mutation for toggling a binary daily goal's completion on a specific date.
  *
  * Contract:

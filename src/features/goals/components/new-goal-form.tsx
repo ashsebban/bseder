@@ -13,6 +13,22 @@ import type { Goal, GoalCadence, GoalType, IfUnfinished } from "@/features/goals
 import { todayIso } from "@/lib/date";
 
 const DEFAULT_ACTIVE_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri"];
+
+const ZMANIM_PERIODS = [
+  "Alot HaShachar",
+  "Misheyakir",
+  "Netz HaChama",
+  "Sof Zman Shema",
+  "Sof Zman Tefilla",
+  "Chatzot",
+  "Mincha Gedola",
+  "Mincha Ketana",
+  "Plag HaMincha",
+  "Shkiyah",
+  "Bein HaShmashot",
+  "Tzais HaKochavim",
+  "Night",
+] as const;
 const DEFAULT_EXCLUDES: HolidayExcludes = { categories: [], individual: [] };
 
 function buildSummary(fields: {
@@ -106,8 +122,11 @@ export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose }: N
   const [endCount, setEndCount] = useState(existingGoal?.endAfterPeriods ? String(existingGoal.endAfterPeriods) : "90");
   const [dueDate, setDueDate] = useState(existingGoal?.dueDate ?? "");
   const [ifUnfinished, setIfUnfinished] = useState<IfUnfinished>(existingGoal?.ifUnfinished ?? "forgive");
-  const [allowCatchup, setAllowCatchup] = useState(existingGoal?.allowCatchup ?? false);
+
   const [noGettingAhead, setNoGettingAhead] = useState(existingGoal?.noGettingAhead ?? false);
+  const [startsAt, setStartsAt] = useState(existingGoal?.startsAt ?? "");
+  const [expiresAt, setExpiresAt] = useState(existingGoal?.expiresAt ?? "");
+  const [lockInDays, setLockInDays] = useState(existingGoal?.lockInDays ?? false);
 
   // Monthly scheduling state
   const defaultMonthDayType = (): "first" | "last" | "specific" | "flexible" => {
@@ -151,7 +170,7 @@ export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose }: N
       targetUnit: isNumeric && targetUnit ? targetUnit.trim() : undefined,
       current: existingGoal?.current ?? 0,
       completedDates: existingGoal?.completedDates ?? (isDaily && !isNumeric ? [] : undefined),
-      allowCatchup: !isNumeric ? allowCatchup : undefined,
+
       noGettingAhead: isNumeric && !isDaily && !isOneTime ? noGettingAhead : undefined,
       backlog: existingGoal?.backlog,
       activeDays: cadence === "daily" ? activeDays
@@ -163,6 +182,9 @@ export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose }: N
       excludes: isDaily && (holidayExcludes.categories.length > 0 || holidayExcludes.individual.length > 0)
         ? { categories: holidayExcludes.categories, individual: holidayExcludes.individual }
         : undefined,
+      startsAt: isDaily && startsAt ? startsAt : undefined,
+      expiresAt: isDaily && expiresAt ? expiresAt : undefined,
+      lockInDays: (isDaily || (cadence === "weekly" && activeDays.length > 0)) ? lockInDays || undefined : undefined,
       ifUnfinished: showIfUnfinished ? ifUnfinished : undefined,
       startDate,
       endDate: endType === "date" ? endDate || undefined : undefined,
@@ -196,26 +218,6 @@ export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose }: N
         </Select>
       </div>
 
-      {/* Allow catch-up toggle — binary goals only */}
-      {!isNumeric ? (
-        <button
-          type="button"
-          onClick={() => setAllowCatchup((v) => !v)}
-          className="flex w-full items-center justify-between rounded-2xl border border-line bg-white px-4 py-3 shadow-soft transition hover:border-brand/30"
-        >
-          <div className="text-left">
-            <p className="text-sm font-semibold text-text">Can be done ahead / caught up?</p>
-            <p className="mt-0.5 text-xs text-text-subtle">
-              {allowCatchup
-                ? "Yes — e.g. Torah portions (can learn tomorrow's today)"
-                : "No — e.g. Tefillin (once per day maximum)"}
-            </p>
-          </div>
-          <div className={`ml-3 flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-200 ${allowCatchup ? "bg-brand" : "bg-line"}`}>
-            <div className={`h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${allowCatchup ? "translate-x-5" : "translate-x-0.5"}`} />
-          </div>
-        </button>
-      ) : null}
 
       {/* Numeric target fields */}
       {isNumeric ? (
@@ -244,13 +246,56 @@ export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose }: N
         </div>
       ) : null}
 
-      {/* Daily: days picker + holiday exceptions */}
+      {/* Daily: days picker + toggles + time window + exceptions */}
       {isDaily ? (
-        <div className="space-y-3 rounded-2xl border border-line/60 bg-surface-muted/40 p-4">
+        <div className="space-y-4 rounded-2xl border border-line/60 bg-surface-muted/40 p-4">
+          {/* 1. Days */}
           <div className="space-y-2">
             <label className={labelClass}>Days</label>
             <DayPicker value={activeDays} onChange={setActiveDays} />
           </div>
+
+          {/* 2. Lock In + Done Ahead */}
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={() => setLockInDays((v) => !v)}
+              className="flex w-full items-center justify-between rounded-xl border border-line bg-white px-3 py-2.5 transition hover:border-brand/30"
+            >
+              <div className="text-left">
+                <p className="text-sm font-semibold text-text">Lock in days</p>
+                <p className="mt-0.5 text-xs text-text-subtle">
+                  {lockInDays ? "Fixed — can't be moved to another day" : "Flexible — can be dragged to another day"}
+                </p>
+              </div>
+              <div className={`ml-3 flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-200 ${lockInDays ? "bg-brand" : "bg-line"}`}>
+                <div className={`h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${lockInDays ? "translate-x-5" : "translate-x-0.5"}`} />
+              </div>
+            </button>
+          </div>
+
+          {/* 3. Time Window */}
+          <div className="space-y-1.5">
+            <label className={labelClass}>
+              Time window{" "}
+              <span className="font-normal normal-case tracking-normal text-text-subtle">(optional)</span>
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <Select value={startsAt} onChange={(e) => setStartsAt(e.target.value)}>
+                <option value="">Starts: any time</option>
+                {ZMANIM_PERIODS.map((p) => <option key={p} value={p}>{p}</option>)}
+              </Select>
+              <Select value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)}>
+                <option value="">Expires: never</option>
+                {ZMANIM_PERIODS.map((p) => <option key={p} value={p}>{p}</option>)}
+              </Select>
+            </div>
+            {(startsAt || expiresAt) && (
+              <p className="text-[11px] text-text-subtle">Goal dims outside this window — tap still works.</p>
+            )}
+          </div>
+
+          {/* 4. Exceptions */}
           <div className="space-y-1.5">
             <label className={labelClass}>Except</label>
             <HolidayChipSelect
@@ -264,12 +309,29 @@ export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose }: N
 
       {/* Weekly: day-of-week picker */}
       {cadence === "weekly" ? (
-        <div className="space-y-2 rounded-2xl border border-line/60 bg-surface-muted/40 p-4">
+        <div className="space-y-3 rounded-2xl border border-line/60 bg-surface-muted/40 p-4">
           <label className={labelClass}>Preferred days (optional)</label>
           <DayPicker value={activeDays} onChange={setActiveDays} />
           <p className="mt-1 text-xs text-text-subtle">
             Drag to the week → auto-assigns to these days.
           </p>
+          {activeDays.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setLockInDays((v) => !v)}
+              className="flex w-full items-center justify-between rounded-xl border border-line bg-white px-3 py-2.5 transition hover:border-brand/30"
+            >
+              <div className="text-left">
+                <p className="text-sm font-semibold text-text">Lock in days</p>
+                <p className="mt-0.5 text-xs text-text-subtle">
+                  {lockInDays ? "Fixed — can't be moved to another day" : "Flexible — can be dragged to another day"}
+                </p>
+              </div>
+              <div className={`ml-3 flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-200 ${lockInDays ? "bg-brand" : "bg-line"}`}>
+                <div className={`h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${lockInDays ? "translate-x-5" : "translate-x-0.5"}`} />
+              </div>
+            </button>
+          )}
         </div>
       ) : null}
 

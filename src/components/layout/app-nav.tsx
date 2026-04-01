@@ -2,27 +2,29 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import { User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StarOfDavid } from "@/components/ui/star-of-david";
 import { cn } from "@/lib/cn";
 
-function getCalendarHref() {
-  try {
-    const raw = localStorage.getItem("planner.calendar-preferences.v1");
-    if (raw) {
-      const prefs = JSON.parse(raw) as { defaultView?: string };
-      if (prefs.defaultView) return `/planner?view=${prefs.defaultView}`;
-    }
-  } catch {}
-  return "/planner";
-}
-
 export function AppNav() {
   const pathname = usePathname();
 
+  // Start with SSR-safe href, hydrate from localStorage after mount
+  const [calendarHref, setCalendarHref] = useState("/planner");
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("planner.calendar-preferences.v1");
+      if (raw) {
+        const prefs = JSON.parse(raw) as { defaultView?: string };
+        if (prefs.defaultView) setCalendarHref(`/planner?view=${prefs.defaultView}`);
+      }
+    } catch {}
+  }, []);
+
   const navLinks = [
-    { href: getCalendarHref(), base: "/planner", label: "Calendar" },
+    { href: calendarHref, base: "/planner", label: "Calendar" },
     { href: "/goals", base: "/goals", label: "Goals" },
   ];
 

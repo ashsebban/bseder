@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useEffect, useCallback } from "react";
+import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { cn } from "@/lib/cn";
 import { useRouter } from "next/navigation";
 import { useCalendarRouterState } from "@/features/calendar/hooks/use-calendar-router-state";
@@ -21,10 +21,12 @@ import { loadGoals, saveGoals } from "@/features/goals/lib/goal-store";
 import { buildExcludedDates, computeDayProgress } from "@/features/goals/lib/goal-progress";
 import {
   DndContext,
+  DragOverlay,
   useSensor, useSensors, MouseSensor, TouchSensor,
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
+import { arrayMove } from "@dnd-kit/sortable";
 import { GoalTray } from "@/features/planner/components/goal-tray";
 import {
   loadDayAssignments,
@@ -34,8 +36,12 @@ import {
 } from "@/features/planner/lib/day-assignment-store";
 import type { Goal } from "@/features/goals/types/goal";
 import { computePeriodKey } from "@/features/planner/lib/period-key";
-import { toggleGoalDate } from "@/features/goals/lib/goal-mutations";
+import { toggleGoalDate, updateParentProgress } from "@/features/goals/lib/goal-mutations";
+import { loadGoalOrder, saveGoalOrder, reorderGlobal } from "@/features/planner/lib/goal-order-store";
 import { computeRemainingCapacity } from "@/features/planner/lib/assignment-rules";
+import { Drawer } from "@/components/ui/drawer";
+import type { CalendarDayMetadata } from "@/features/calendar/types/calendar";
+import { getApplicableGoalsForDate } from "@/features/goals/lib/goal-progress";
 
 
 const TIMELINE_START_HOUR = 5;
@@ -54,14 +60,18 @@ function AmountPrompt({
   onConfirm,
   onCancel,
   maxAmount,
+  defaultAmount,
+  title,
 }: {
   goal: Goal;
   dayLabel: string;
   onConfirm: (amount: number) => void;
   onCancel: () => void;
   maxAmount?: number;
+  defaultAmount?: number;
+  title?: string;
 }) {
-  const [value, setValue] = useState("1");
+  const [value, setValue] = useState(String(defaultAmount ?? 1));
   const clamp = (n: number) => Math.min(maxAmount ?? Infinity, Math.max(1, n));
   return (
     <div
@@ -70,7 +80,7 @@ function AmountPrompt({
     >
       <div className="w-72 rounded-2xl bg-white p-5 shadow-2xl ring-1 ring-slate-900/10">
         <p className="text-[13.5px] font-bold text-slate-800">
-          How many {goal.targetUnit ?? "units"}?
+          {title ?? `How many ${goal.targetUnit ?? "units"}?`}
         </p>
         <p className="mt-0.5 text-[11.5px] text-slate-400">
           {goal.title} → {dayLabel}
@@ -164,6 +174,205 @@ function CapBlockedPrompt({
   );
 }
 
+type PanelGoalItem =
+  | { kind: "daily"; goal: Goal }
+  | { kind: "assigned"; goal: Goal; assignment: DayAssignment };
+
+function PanelSortHandle({
+  goalId,
+  allIds,
+  onReorderGoals,
+}: {
+  goalId: string;
+  allIds: string[];
+  onReorderGoals: (prev: string[], next: string[]) => void;
+}) {
+  const dragRef = useRef<{ startY: number; startIdx: number } | null>(null);
+  return (
+    <button
+      type="button"
+      tabIndex={-1}
+      className="shrink-0 cursor-grab touch-none text-slate-200 hover:text-slate-400 active:cursor-grabbing"
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        dragRef.current = { startY: e.clientY, startIdx: allIds.indexOf(goalId) };
+      }}
+      onPointerMove={(e) => { if (dragRef.current) e.stopPropagation(); }}
+      onPointerUp={(e) => {
+        if (!dragRef.current) return;
+        e.stopPropagation();
+        const { startY, startIdx } = dragRef.current;
+        dragRef.current = null;
+        const offset = Math.round((e.clientY - startY) / 44);
+        const newIdx = Math.max(0, Math.min(allIds.length - 1, startIdx + offset));
+        if (newIdx !== startIdx) onReorderGoals(allIds, arrayMove(allIds, startIdx, newIdx));
+      }}
+      onPointerCancel={() => { dragRef.current = null; }}
+    >
+      <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor">
+        <circle cx="2.5" cy="2.5" r="1.5"/><circle cx="7.5" cy="2.5" r="1.5"/>
+        <circle cx="2.5" cy="7" r="1.5"/><circle cx="7.5" cy="7" r="1.5"/>
+        <circle cx="2.5" cy="11.5" r="1.5"/><circle cx="7.5" cy="11.5" r="1.5"/>
+      </svg>
+    </button>
+  );
+}
+
+function SortablePanelGoalItem({
+  item,
+  iso,
+  allIds,
+  onToggleDate,
+  onToggleAssignment,
+  onReorderGoals,
+}: {
+  item: PanelGoalItem;
+  iso: string;
+  allIds: string[];
+  onToggleDate: (goalId: string, isoDate: string) => void;
+  onToggleAssignment: (id: string) => void;
+  onReorderGoals: (prev: string[], next: string[]) => void;
+}) {
+  const done = item.kind === "assigned"
+    ? item.assignment.completed
+    : (item.goal.completedDates?.includes(iso) ?? false);
+
+  function handleToggle() {
+    if (item.kind === "assigned") onToggleAssignment(item.assignment.id);
+    else onToggleDate(item.goal.id, iso);
+  }
+
+  return (
+    <div className="flex items-center gap-2.5 rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm">
+      <PanelSortHandle goalId={item.goal.id} allIds={allIds} onReorderGoals={onReorderGoals} />
+      <button
+        type="button"
+        onClick={handleToggle}
+        className={cn(
+          "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition",
+          done ? "border-success bg-success" : "border-slate-300 bg-white hover:border-brand",
+        )}
+      >
+        {done && (
+          <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+            <path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        )}
+      </button>
+      <p className={cn("min-w-0 flex-1 truncate text-[13px] font-semibold", done ? "text-slate-400 line-through" : "text-slate-800")}>
+        {item.goal.title}
+      </p>
+    </div>
+  );
+}
+
+function DayPanelContent({
+  date,
+  metadata,
+  goals,
+  dayAssignments,
+  excludedByGoal,
+  onToggleAssignment,
+  onToggleDate,
+  goalOrder,
+  onReorderGoals,
+  onNavigate,
+}: {
+  date: Date;
+  metadata?: CalendarDayMetadata;
+  goals: Goal[];
+  dayAssignments: DayAssignment[];
+  excludedByGoal: Map<string, Set<string>>;
+  onToggleAssignment: (id: string) => void;
+  onToggleDate: (goalId: string, isoDate: string) => void;
+  goalOrder: string[];
+  onReorderGoals: (prev: string[], next: string[]) => void;
+  onNavigate: () => void;
+}) {
+  const iso = toIsoDate(date);
+
+  const assignments = dayAssignments.filter((a) => a.date === iso);
+  const assignedGoalIds = new Set(assignments.map((a) => a.goalId));
+  const dailyGoals = getApplicableGoalsForDate(goals, date, excludedByGoal)
+    .filter((g) => !assignedGoalIds.has(g.id));
+
+  // Unified sorted list
+  const allItems: PanelGoalItem[] = [
+    ...dailyGoals.map((g): PanelGoalItem => ({ kind: "daily", goal: g })),
+    ...assignments
+      .map((a) => ({ a, goal: goals.find((g) => g.id === a.goalId) }))
+      .filter((x): x is { a: DayAssignment; goal: Goal } => x.goal !== undefined)
+      .map(({ a, goal }): PanelGoalItem => ({ kind: "assigned", goal, assignment: a })),
+  ].sort((x, y) => {
+    const ai = goalOrder.indexOf(x.goal.id);
+    const bi = goalOrder.indexOf(y.goal.id);
+    return (ai === -1 ? Infinity : ai) - (bi === -1 ? Infinity : bi);
+  });
+
+  const itemIds = allItems.map((i) => i.goal.id);
+
+  return (
+    <div className="flex flex-col gap-5">
+      {/* Hebrew date + zmanim */}
+      {metadata && (
+        <div className="flex flex-wrap items-center gap-2">
+          {metadata.hebrewDateLabel && (
+            <span className="text-[13px] font-semibold text-slate-500">{metadata.hebrewDateLabel}</span>
+          )}
+          {metadata.candleLighting && (
+            <span className="rounded-full border border-brand/15 bg-brand/[0.06] px-2 py-0.5 text-[11px] font-semibold text-brand/70">
+              🕯 {metadata.candleLighting}
+            </span>
+          )}
+          {metadata.fastBegins && (
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
+              Fast {metadata.fastBegins}
+            </span>
+          )}
+          {metadata.shabbosEnds && (
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
+              Ends {metadata.shabbosEnds}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Goals for this day */}
+      <div className="flex flex-col gap-2">
+        {allItems.length === 0 ? (
+          <p className="text-[13px] text-slate-400">No goals scheduled — drag from the Goal Library</p>
+        ) : (
+          <>{allItems.map((item) => (
+            <SortablePanelGoalItem
+              key={item.goal.id}
+              item={item}
+              iso={iso}
+              allIds={itemIds}
+              onToggleDate={onToggleDate}
+              onToggleAssignment={onToggleAssignment}
+              onReorderGoals={onReorderGoals}
+            />
+          ))}</>
+        )}
+      </div>
+
+      {/* Open full day view */}
+      <button
+        type="button"
+        onClick={onNavigate}
+        className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-xl border border-brand/20 bg-brand/[0.06] py-2.5 text-[13px] font-semibold text-brand transition hover:bg-brand/10"
+      >
+        Open Day View
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <path d="M5 2.5L9.5 7L5 11.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+
 export function CalendarWorkspace() {
   const router = useRouter();
   const calendar = useCalendarRouterState();
@@ -178,6 +387,7 @@ export function CalendarWorkspace() {
 
   const [goals, setGoals] = useState<Goal[]>([]);
   const [dayAssignments, setDayAssignments] = useState<DayAssignment[]>([]);
+  const [goalOrder, setGoalOrder] = useState<string[]>([]);
   const [completedOmerDates, setCompletedOmerDates] = useState<Set<string>>(() => {
     try {
       const raw = typeof window !== "undefined" ? localStorage.getItem("steinberg.omer_completions.v1") : null;
@@ -193,13 +403,30 @@ export function CalendarWorkspace() {
     });
   }, []);
 
+  const [sidePanelDate, setSidePanelDate] = useState<Date | null>(null);
+
   // Start open (matches SSR); sync from localStorage after hydration to avoid mismatch
   const [trayOpen, setTrayOpen] = useState(true);
+  const [trayFilter, setTrayFilter] = useState<"all" | "hide-done" | "hide-allocated">("all");
+  const [trayFilterMenuOpen, setTrayFilterMenuOpen] = useState(false);
+  const trayFilterMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const saved = localStorage.getItem("goal-tray-open");
     if (saved !== null) setTrayOpen(saved === "true");
   }, []);
-  const [pendingAssignment, setPendingAssignment] = useState<{ goalId: string; isoDate: string; maxAmount?: number } | null>(null);
+  useEffect(() => {
+    if (!trayFilterMenuOpen) return;
+    function handleClick(e: MouseEvent) {
+      if (trayFilterMenuRef.current && !trayFilterMenuRef.current.contains(e.target as Node)) {
+        setTrayFilterMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [trayFilterMenuOpen]);
+  const [pendingAssignment, setPendingAssignment] = useState<{ goalId: string; isoDate: string; maxAmount?: number; suggestedAmount?: number; replacedAutoDate?: string } | null>(null);
+  const [pendingCompletion, setPendingCompletion] = useState<{ id: string; defaultAmount: number; date: string } | null>(null);
+  const [pendingDateCompletion, setPendingDateCompletion] = useState<{ goalId: string; isoDate: string; defaultAmount: number } | null>(null);
   const [capBlockedGoal, setCapBlockedGoal] = useState<{ goalId: string } | null>(null);
   const [activeGoalId, setActiveGoalId] = useState<string | null>(null);
   const sensors = useSensors(
@@ -209,6 +436,15 @@ export function CalendarWorkspace() {
   useEffect(() => {
     setGoals(loadGoals());
     setDayAssignments(loadDayAssignments());
+    setGoalOrder(loadGoalOrder());
+  }, []);
+
+  const handleReorderGoals = useCallback((prevDayIds: string[], newDayIds: string[]) => {
+    setGoalOrder((prev) => {
+      const next = reorderGlobal(prev, prevDayIds, newDayIds);
+      saveGoalOrder(next);
+      return next;
+    });
   }, []);
 
   const dayZmanim = useMemo(() => {
@@ -219,6 +455,16 @@ export function CalendarWorkspace() {
     if (!location) return null;
     return computeDayZmanim(calendar.selectedDate, location, preferences.timeFormat);
   }, [calendar.view, calendar.selectedDateIso, preferences.locationKey, preferences.timeFormat]);
+
+  // Zmanim for today — used in week view to dim expired goals in the today column
+  const todayZmanim = useMemo(() => {
+    if (calendar.view !== "week") return null;
+    const locationOption = getCalendarLocationByKey(preferences.locationKey);
+    if (!locationOption) return null;
+    const location = Location.lookup(locationOption.lookupName);
+    if (!location) return null;
+    return computeDayZmanim(today, location, preferences.timeFormat);
+  }, [calendar.view, preferences.locationKey, preferences.timeFormat]);
 
   const [viewInitialized, setViewInitialized] = useState(false);
   useEffect(() => {
@@ -282,7 +528,7 @@ export function CalendarWorkspace() {
     if (goals.length > 0) {
       const cursor = new Date(monthRangeStart);
       while (cursor <= monthRangeEnd) {
-        const progress = computeDayProgress(goals, new Date(cursor), excludedByGoal);
+        const progress = computeDayProgress(goals, new Date(cursor), excludedByGoal, dayAssignments);
         if (progress) {
           const iso = toIsoDate(cursor);
           const existing = merged.get(iso);
@@ -294,9 +540,13 @@ export function CalendarWorkspace() {
 
     // 2. Assignment progress (intent-driven: explicitly planned sessions toggled complete)
     //    Folded in so monthly tile counters stay in sync with the planner.
-    const goalIdSet = new Set(goals.map((g) => g.id));
+    //    IMPORTANT: skip daily goals — they are already counted in Source 1 via completedDates.
+    //    Counting them again here causes double-counting and stale missed/completed mismatches.
+    const goalMap = new Map(goals.map((g) => [g.id, g]));
     for (const assignment of dayAssignments) {
-      if (!goalIdSet.has(assignment.goalId)) continue; // skip orphaned assignments
+      const goal = goalMap.get(assignment.goalId);
+      if (!goal) continue; // skip orphaned assignments
+      if (goal.cadence === "daily") continue; // already counted by computeDayProgress via completedDates
       const existing = merged.get(assignment.date);
       const base = existing?.progress ?? { completed: 0, total: 0, missed: 0 };
       merged.set(assignment.date, {
@@ -307,6 +557,28 @@ export function CalendarWorkspace() {
           missed: base.missed,
         },
       });
+    }
+
+    // 3. Auto-show completions for non-daily goals (weekly/monthly/yearly goals completed via
+    //    completedDates without creating a DayAssignment — e.g. toggled in the week grid).
+    //    Skip any date already covered by a DayAssignment for the same goal (Source 2 counted those).
+    const assignmentDatesByGoal = new Map<string, Set<string>>();
+    for (const a of dayAssignments) {
+      if (!assignmentDatesByGoal.has(a.goalId)) assignmentDatesByGoal.set(a.goalId, new Set());
+      assignmentDatesByGoal.get(a.goalId)!.add(a.date);
+    }
+    for (const goal of goals) {
+      if (goal.cadence === "daily") continue; // already handled by Source 1
+      const coveredDates = assignmentDatesByGoal.get(goal.id) ?? new Set<string>();
+      for (const dateStr of (goal.completedDates ?? [])) {
+        if (coveredDates.has(dateStr)) continue; // already counted in Source 2
+        const existing = merged.get(dateStr);
+        const base = existing?.progress ?? { completed: 0, total: 0, missed: 0 };
+        merged.set(dateStr, {
+          ...existing,
+          progress: { completed: base.completed + 1, total: base.total + 1, missed: base.missed },
+        });
+      }
     }
 
     return merged;
@@ -367,6 +639,16 @@ export function CalendarWorkspace() {
         saveGoals(synced);
         return synced;
       }
+      // If this assignment's date is marked done in completedDates, un-mark it
+      if (goal?.completedDates?.includes(assignment.date)) {
+        const synced = gs.map((g) =>
+          g.id === assignment.goalId
+            ? { ...g, completedDates: g.completedDates!.filter((d) => d !== assignment.date) }
+            : g,
+        );
+        saveGoals(synced);
+        return synced;
+      }
       return gs;
     });
   }, [dayAssignments]);
@@ -391,17 +673,36 @@ export function CalendarWorkspace() {
     if (goal?.cadence === "daily" && goal?.type === "binary") {
       const alreadyInDates = goal.completedDates?.includes(assignment.date) ?? false;
       if (nowCompleted !== alreadyInDates) {
-        setGoals((prev) =>
-          prev.map((g) => {
+        setGoals((prev) => {
+          const updated = prev.map((g) => {
             if (g.id !== assignment.goalId) return g;
             const dates = g.completedDates ?? [];
-            const updated = dates.includes(assignment.date)
+            const newDates = dates.includes(assignment.date)
               ? dates.filter((d) => d !== assignment.date)
               : [...dates, assignment.date];
-            return { ...g, completedDates: updated };
-          }),
-        );
+            return { ...g, completedDates: newDates };
+          });
+          saveGoals(updated);
+          return updated;
+        });
       }
+    }
+    // Intercept quantified completions — ask "how many?" before marking done
+    if (nowCompleted && goal?.type === "quantified") {
+      const def = assignment.targetAmount ?? suggestedAmount(goal);
+      setPendingCompletion({ id, defaultAmount: def, date: assignment.date });
+      return;
+    }
+    // Feed progress back to parent one-time (project) goal
+    if (goal?.parentGoalId) {
+      const delta = nowCompleted
+        ? +(assignment.targetAmount ?? goal.target ?? 1)
+        : -(assignment.targetAmount ?? goal.target ?? 1);
+      setGoals((prev) => {
+        const updated = updateParentProgress(prev, goal.parentGoalId!, delta);
+        saveGoals(updated);
+        return updated;
+      });
     }
     setDayAssignments((prev) => {
       const now = new Date();
@@ -413,7 +714,7 @@ export function CalendarWorkspace() {
         return {
           ...a,
           completed: nowCompleted,
-          completedAt: nowCompleted ? timeStr : undefined,
+          completedAt: nowCompleted ? (a.scheduledTime ?? timeStr) : undefined,
           scheduledTime: nowCompleted && !a.scheduledTime ? timeStr : a.scheduledTime,
         };
       });
@@ -432,6 +733,12 @@ export function CalendarWorkspace() {
     });
   }, []);
 
+  function suggestedAmount(goal: Goal): number {
+    // Daily goals: target IS the per-session amount — don't divide by activeDays
+    if (goal.cadence === "daily") return goal.target ?? 1;
+    return Math.ceil((goal.target ?? 1) / Math.max(1, goal.activeDays?.length ?? 7));
+  }
+
   const handleDragStart = useCallback((event: DragStartEvent) => {
     setActiveGoalId(event.active.id as string);
   }, []);
@@ -439,6 +746,7 @@ export function CalendarWorkspace() {
   const handleDragEnd = useCallback((event: DragEndEvent) => {
     setActiveGoalId(null);
     const activeId = event.active.id as string;
+
     const isoDate = event.over?.id as string | undefined;
 
     // Drop onto a timeline time slot (day view)
@@ -450,11 +758,30 @@ export function CalendarWorkspace() {
       const timeStr = `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
       const dayIso = toIsoDate(calendar.selectedDate);
 
+      // Helper: check if a "HH:MM" time falls within a goal's zmanim window
+      const isTimeInGoalWindow = (goal: Goal, hhmm: string): boolean => {
+        if (!dayZmanim || (!goal.startsAt && !goal.expiresAt)) return true;
+        const [hh, mm] = hhmm.split(":").map(Number);
+        const frac = hh + mm / 60;
+        if (goal.startsAt) {
+          const p = dayZmanim.periods.find((p) => p.name === goal.startsAt);
+          if (p && frac < p.startHour) return false;
+        }
+        if (goal.expiresAt) {
+          const p = dayZmanim.periods.find((p) => p.name === goal.expiresAt);
+          if (p && frac >= p.startHour) return false;
+        }
+        return true;
+      };
+
       if (activeId.startsWith("assignment:") || activeId.startsWith("timeline:")) {
         // Existing assignment dragged to a different slot → update scheduledTime
         const assignmentId = activeId.startsWith("assignment:")
           ? activeId.slice("assignment:".length)
           : activeId.slice("timeline:".length);
+        const assignment = dayAssignments.find((a) => a.id === assignmentId);
+        const goal = assignment ? goals.find((g) => g.id === assignment.goalId) : undefined;
+        if (goal && !isTimeInGoalWindow(goal, timeStr)) return;
         handleSetScheduledTime(assignmentId, timeStr);
       } else if (activeId.startsWith("daily:")) {
         // Daily goal dragged from checklist to timeline → create assignment with scheduledTime
@@ -462,6 +789,7 @@ export function CalendarWorkspace() {
         const goalId = activeId.slice("daily:".length);
         const goal = goals.find((g) => g.id === goalId);
         if (!goal) return;
+        if (!isTimeInGoalWindow(goal, timeStr)) return;
         handleAssign(goalId, dayIso, undefined, undefined, undefined, timeStr, preferences.timelineDefaultDurationMins);
       } else {
         // Goal pill from tray dropped directly onto a time slot → create assignment with scheduledTime
@@ -474,12 +802,16 @@ export function CalendarWorkspace() {
       return;
     }
 
-    // Assignment drag → move to new day
+    // Assignment drag → move to new day (blocked if goal is locked)
     if (activeId.startsWith("assignment:") || activeId.startsWith("timeline:")) {
       const assignmentId = activeId.startsWith("assignment:")
         ? activeId.slice("assignment:".length)
         : activeId.slice("timeline:".length);
-      if (isoDate) handleMoveAssignment(assignmentId, isoDate);
+      if (isoDate) {
+        const assignment = dayAssignments.find((a) => a.id === assignmentId);
+        const goal = assignment ? goals.find((g) => g.id === assignment.goalId) : undefined;
+        if (!goal?.lockInDays) handleMoveAssignment(assignmentId, isoDate);
+      }
       return;
     }
 
@@ -495,7 +827,16 @@ export function CalendarWorkspace() {
       if (!isoDate || isoDate === sourceIso) return; // no-op if dropped on same day
       const goal = goals.find((g) => g.id === goalId);
       if (!goal) return;
+      if (goal.lockInDays) return; // locked — ignore cross-day drag
       const periodKey = computePeriodKey(goal.cadence, new Date(isoDate + "T00:00:00"));
+      // For quantified weekly auto-show drags, prompt for amount (same as pill drags)
+      if (goal.type === "quantified" && goal.targetUnit) {
+        const remaining = goal.noGettingAhead && goal.target !== undefined
+          ? computeRemainingCapacity(goal, dayAssignments, calendar.selectedDate)
+          : undefined;
+        setPendingAssignment({ goalId, isoDate, suggestedAmount: suggestedAmount(goal), maxAmount: remaining, replacedAutoDate: sourceIso });
+        return;
+      }
       handleAssign(goalId, isoDate, undefined, periodKey, sourceIso);
       return;
     }
@@ -516,7 +857,7 @@ export function CalendarWorkspace() {
         return;
       }
       if (goal.type === "quantified" && goal.targetUnit) {
-        setPendingAssignment({ goalId, isoDate, maxAmount: remaining });
+        setPendingAssignment({ goalId, isoDate, maxAmount: remaining, suggestedAmount: suggestedAmount(goal) });
         return;
       }
       // Binary capped goal with remaining capacity — assign to the dropped day.
@@ -531,13 +872,13 @@ export function CalendarWorkspace() {
     }
 
     if (goal.type === "quantified" && goal.targetUnit) {
-      setPendingAssignment({ goalId, isoDate });
+      setPendingAssignment({ goalId, isoDate, suggestedAmount: suggestedAmount(goal) });
     } else if (goal.cadence === "monthly" && goal.preferredMonthDay !== undefined) {
       handleAssign(goalId, getPreferredMonthDate(isoDate, goal.preferredMonthDay), undefined, periodKey);
     } else {
       handleAssign(goalId, isoDate, undefined, periodKey);
     }
-  }, [goals, dayAssignments, preferences, handleAssign, handleMoveAssignment, handleSetScheduledTime, calendar.selectedDate]);
+  }, [goals, dayAssignments, preferences, dayZmanim, handleAssign, handleMoveAssignment, handleSetScheduledTime, calendar.selectedDate]);
 
   const handleAddTask = useCallback((title: string, isoDate: string) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -551,12 +892,19 @@ export function CalendarWorkspace() {
   }, [handleAssign]);
 
   const handleToggleDate = useCallback((goalId: string, isoDate: string) => {
+    const goal = goals.find((g) => g.id === goalId);
+    const isDone = goal?.completedDates?.includes(isoDate) ?? false;
+    // Intercept quantified goals marking done — ask "how many?" first
+    if (!isDone && goal?.type === "quantified") {
+      setPendingDateCompletion({ goalId, isoDate, defaultAmount: suggestedAmount(goal) });
+      return;
+    }
     setGoals((prev) => {
       const updated = toggleGoalDate(prev, goalId, isoDate);
       saveGoals(updated);
       return updated;
     });
-  }, []);
+  }, [goals]);
 
   const title = getViewTitle(calendar.view, calendar.selectedDate, calendar.selectedDate, today, preferences.weekStartsOn);
   const month = buildMonthView(calendar.selectedDate, calendar.selectedDate, today, metadataByDate, preferences.weekStartsOn);
@@ -597,39 +945,81 @@ export function CalendarWorkspace() {
       )}>
         <DndContext
           sensors={sensors}
+
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
           onDragCancel={() => setActiveGoalId(null)}
         >
           {/* Goal Library — persistent collapsible */}
           <div className="mb-3 overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
-            <button
-              type="button"
-              onClick={() => {
-                const next = !trayOpen;
-                setTrayOpen(next);
-                localStorage.setItem("goal-tray-open", String(next));
-              }}
-              className="flex w-full items-center justify-between px-4 py-3 transition-colors hover:bg-slate-50/60"
-            >
-              <div className="flex items-center gap-2.5">
+            <div className="flex items-center px-4 py-3">
+              {/* Left: title + badge — clickable to toggle */}
+              <button
+                type="button"
+                onClick={() => { const next = !trayOpen; setTrayOpen(next); localStorage.setItem("goal-tray-open", String(next)); }}
+                className="flex min-w-0 flex-1 items-center gap-2.5 text-left transition-colors hover:opacity-80"
+              >
                 <span className="text-[13px] font-semibold text-slate-700">Goal Library</span>
                 {goals.filter((g) => !g.adhoc && g.status !== "paused" && g.status !== "done").length > 0 && (
                   <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[10px] font-bold text-brand">
                     {goals.filter((g) => !g.adhoc && g.status !== "paused" && g.status !== "done").length}
                   </span>
                 )}
+              </button>
+
+              {/* Right: filter icon + chevron */}
+              <div className="flex items-center gap-2">
+                {/* Filter settings icon */}
+                <div ref={trayFilterMenuRef} className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setTrayFilterMenuOpen((s) => !s)}
+                    className={cn(
+                      "rounded-md p-1 transition-colors",
+                      trayFilter !== "all" ? "text-brand" : "text-slate-400 hover:text-slate-600",
+                    )}
+                    title="Filter goals"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="4" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="11" y1="18" x2="13" y2="18"/>
+                    </svg>
+                  </button>
+                  {trayFilterMenuOpen && (
+                    <div className="absolute right-0 top-7 z-50 w-40 rounded-xl border border-slate-200 bg-white py-1 shadow-lg">
+                      {(["all", "hide-done", "hide-allocated"] as const).map((value) => {
+                        const label = value === "all" ? "Show all" : value === "hide-done" ? "Hide done" : "Hide allocated";
+                        return (
+                          <button
+                            key={value}
+                            type="button"
+                            onClick={() => { setTrayFilter(value); setTrayFilterMenuOpen(false); }}
+                            className={cn(
+                              "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] transition-colors hover:bg-slate-50",
+                              trayFilter === value ? "font-semibold text-brand" : "text-slate-600",
+                            )}
+                          >
+                            <span className={cn("h-[7px] w-[7px] rounded-full border", trayFilter === value ? "border-brand bg-brand" : "border-slate-300")} />
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Collapse chevron */}
+                <button
+                  type="button"
+                  onClick={() => { const next = !trayOpen; setTrayOpen(next); localStorage.setItem("goal-tray-open", String(next)); }}
+                  className="rounded-md p-1 text-slate-400 transition-colors hover:text-slate-600"
+                >
+                  <svg width="14" height="8" viewBox="0 0 14 8" fill="none" className={cn("transition-transform duration-200", trayOpen && "rotate-180")}>
+                    <path d="M1 1L7 7L13 1" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </button>
               </div>
-              <svg
-                width="14"
-                height="8"
-                viewBox="0 0 14 8"
-                fill="none"
-                className={cn("text-slate-400 transition-transform duration-200", trayOpen && "rotate-180")}
-              >
-                <path d="M1 1L7 7L13 1" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </button>
+            </div>
+
             {trayOpen && (
               <div className="border-t border-slate-100 px-4 pb-4 pt-3">
                 <GoalTray
@@ -638,6 +1028,7 @@ export function CalendarWorkspace() {
                   selectedDate={calendar.selectedDate}
                   view={calendar.view === "month" ? "month" : "week"}
                   weekStartsOn={preferences.weekStartsOn}
+                  filter={trayFilter}
                 />
               </div>
             )}
@@ -649,7 +1040,8 @@ export function CalendarWorkspace() {
             {calendar.view === "month" ? (
               <MonthGrid
                 month={month}
-                onSelectDate={calendar.setSelectedDate}
+                onSelectDate={(d) => { calendar.setSelectedDate(d); setSidePanelDate(d); }}
+                onDoubleClickDate={(d) => { calendar.setSelectedDate(d); calendar.setView("day"); }}
                 showOutsideMonthDays={preferences.showOutsideMonthDays}
                 weekStartsOn={preferences.weekStartsOn}
               />
@@ -669,6 +1061,9 @@ export function CalendarWorkspace() {
                 showOmer={preferences.showOmer}
                 completedOmerDates={completedOmerDates}
                 onToggleOmer={handleToggleOmer}
+                goalOrder={goalOrder}
+                onReorderGoals={handleReorderGoals}
+                todayZmanim={todayZmanim ?? undefined}
               />
             ) : null}
             {calendar.view === "day" ? (
@@ -694,6 +1089,8 @@ export function CalendarWorkspace() {
                 timelineDefaultDurationMins={preferences.timelineDefaultDurationMins}
                 onTimelinePreferenceChange={(key, value) => updatePreference(key, value as never)}
                 onSetDuration={handleSetDuration}
+                goalOrder={goalOrder}
+                onReorderGoals={handleReorderGoals}
               />
             ) : null}
           </div>
@@ -721,11 +1118,12 @@ export function CalendarWorkspace() {
               <AmountPrompt
                 goal={goal}
                 dayLabel={dayLabel}
+                defaultAmount={pendingAssignment.suggestedAmount}
                 maxAmount={pendingAssignment.maxAmount}
                 onConfirm={(amount) => {
                   const pGoal = goals.find((g) => g.id === pendingAssignment.goalId);
                   const pKey = pGoal ? computePeriodKey(pGoal.cadence, new Date(pendingAssignment.isoDate + "T00:00:00")) : undefined;
-                  handleAssign(pendingAssignment.goalId, pendingAssignment.isoDate, amount, pKey);
+                  handleAssign(pendingAssignment.goalId, pendingAssignment.isoDate, amount, pKey, pendingAssignment.replacedAutoDate);
                   setPendingAssignment(null);
                 }}
                 onCancel={() => setPendingAssignment(null)}
@@ -733,8 +1131,139 @@ export function CalendarWorkspace() {
             );
           })()}
 
+          {/* Amount prompt when checking off a quantified assignment */}
+          {pendingCompletion && (() => {
+            const goal = goals.find((g) => g.id === dayAssignments.find((a) => a.id === pendingCompletion.id)?.goalId);
+            if (!goal) return null;
+            const maxAmount = goal.noGettingAhead && goal.target !== undefined
+              ? computeRemainingCapacity(goal, dayAssignments, calendar.selectedDate)
+              : undefined;
+            return (
+              <AmountPrompt
+                goal={goal}
+                dayLabel={pendingCompletion.date}
+                defaultAmount={pendingCompletion.defaultAmount}
+                maxAmount={maxAmount}
+                onConfirm={(amount) => {
+                  const id = pendingCompletion.id;
+                  setPendingCompletion(null);
+                  setDayAssignments((prev) => {
+                    const now = new Date();
+                    const hh = now.getHours().toString().padStart(2, "0");
+                    const mm = now.getMinutes().toString().padStart(2, "0");
+                    const timeStr = `${hh}:${mm}`;
+                    const updated = prev.map((a) => {
+                      if (a.id !== id) return a;
+                      return {
+                        ...a,
+                        targetAmount: amount,
+                        completed: true,
+                        completedAt: a.scheduledTime ?? timeStr,
+                        scheduledTime: a.scheduledTime ?? timeStr,
+                      };
+                    });
+                    saveDayAssignments(updated);
+                    return updated;
+                  });
+                  // Feed progress back to parent project goal if applicable
+                  const assignment = dayAssignments.find((a) => a.id === id);
+                  if (goal.parentGoalId && assignment) {
+                    const delta = amount;
+                    setGoals((prev) => {
+                      const updated = updateParentProgress(prev, goal.parentGoalId!, delta);
+                      saveGoals(updated);
+                      return updated;
+                    });
+                  }
+                }}
+                onCancel={() => setPendingCompletion(null)}
+              />
+            );
+          })()}
+
+          {/* Amount prompt when checking off a quantified auto-show goal (date-toggle path) */}
+          {pendingDateCompletion && (() => {
+            const goal = goals.find((g) => g.id === pendingDateCompletion.goalId);
+            if (!goal) return null;
+            return (
+              <AmountPrompt
+                goal={goal}
+                dayLabel={pendingDateCompletion.isoDate}
+                defaultAmount={pendingDateCompletion.defaultAmount}
+                onConfirm={(amount) => {
+                  const { goalId, isoDate } = pendingDateCompletion;
+                  setPendingDateCompletion(null);
+                  // Create a completed DayAssignment so the amount is tracked
+                  const periodKey = computePeriodKey(goal.cadence, new Date(isoDate + "T00:00:00"));
+                  const now = new Date();
+                  const hh = now.getHours().toString().padStart(2, "0");
+                  const mm = now.getMinutes().toString().padStart(2, "0");
+                  const timeStr = `${hh}:${mm}`;
+                  setDayAssignments((prev) => {
+                    // Skip if already assigned (avoids duplicates)
+                    if (prev.some((a) => a.goalId === goalId && a.date === isoDate)) return prev;
+                    const newAssignment = {
+                      id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+                      goalId,
+                      date: isoDate,
+                      targetAmount: amount,
+                      periodKey: periodKey ?? undefined,
+                      completed: true,
+                      completedAt: timeStr,
+                    };
+                    const updated = [...prev, newAssignment];
+                    saveDayAssignments(updated);
+                    return updated;
+                  });
+                }}
+                onCancel={() => setPendingDateCompletion(null)}
+              />
+            );
+          })()}
+
+          {/* DragOverlay renders in a portal at body root — escapes all overflow containers */}
+          <DragOverlay dropAnimation={null}>
+            {activeGoalId ? (() => {
+              const g = goals.find((gl) => gl.id === activeGoalId);
+              if (!g) return null;
+              return (
+                <div className="flex cursor-grabbing select-none items-center gap-2 rounded-xl border border-brand/30 bg-white px-3 py-2 shadow-xl ring-1 ring-brand/20">
+                  <div className="h-2.5 w-2.5 shrink-0 rounded-full bg-brand/60" />
+                  <span className="text-[13px] font-semibold text-slate-800">{g.title}</span>
+                </div>
+              );
+            })() : null}
+          </DragOverlay>
+
         </DndContext>
       </div>
+
+      {/* Day side panel — opens on single-click in month view */}
+      <Drawer
+        open={sidePanelDate !== null}
+        onClose={() => setSidePanelDate(null)}
+        subtitle="Day Overview"
+        title={sidePanelDate ? sidePanelDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }) : ""}
+      >
+        {sidePanelDate && (
+          <DayPanelContent
+            date={sidePanelDate}
+            metadata={metadataByDate.get(toIsoDate(sidePanelDate))}
+            goals={goals}
+            dayAssignments={dayAssignments}
+            excludedByGoal={excludedByGoal}
+            onToggleAssignment={handleToggleAssignment}
+            onToggleDate={handleToggleDate}
+            goalOrder={goalOrder}
+            onReorderGoals={handleReorderGoals}
+            onNavigate={() => {
+              calendar.setSelectedDate(sidePanelDate);
+              calendar.setView("day");
+              setSidePanelDate(null);
+            }}
+          />
+        )}
+      </Drawer>
     </div>
   );
 }

@@ -9,11 +9,12 @@ interface DrawerProps {
   open: boolean;
   onClose: () => void;
   title: string;
+  subtitle?: string;
   children: ReactNode;
   footer?: ReactNode;
 }
 
-export function Drawer({ open, onClose, title, children, footer }: DrawerProps) {
+export function Drawer({ open, onClose, title, subtitle, children, footer }: DrawerProps) {
   // Lock body scroll while open
   useEffect(() => {
     if (open) {
@@ -60,10 +61,12 @@ export function Drawer({ open, onClose, title, children, footer }: DrawerProps) 
         {/* Header */}
         <div className="flex shrink-0 items-start justify-between border-b border-line/60 px-6 py-5">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-brand">
-              Goal Setup
-            </p>
-            <h2 className="mt-1 text-xl font-bold tracking-tight text-text">{title}</h2>
+            {subtitle && (
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-brand">
+                {subtitle}
+              </p>
+            )}
+            <h2 className={cn("text-xl font-bold tracking-tight text-text", subtitle && "mt-1")}>{title}</h2>
           </div>
           <button
             type="button"

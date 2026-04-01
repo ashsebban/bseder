@@ -9,6 +9,14 @@ const KEY_LEGACY = "steinberg_goals"; // pre-versioning key, migrated on first l
 // ─── Zod schema (mirrors Goal interface) ────────────────────────────────────
 // Required fields must be present and well-typed. Optional fields fall back to
 // undefined if missing, so old records with new optional fields load safely.
+
+const MilestoneSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  markerAmount: z.number().optional(),
+  completedDate: z.string().optional(),
+});
+
 const GoalSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -19,7 +27,7 @@ const GoalSchema = z.object({
   targetUnit: z.string().optional(),
   current: z.number().optional(),
   completedDates: z.array(z.string()).optional(),
-  allowCatchup: z.boolean().optional(),
+
   activeDays: z.array(z.string()).optional(),
   excludes: z
     .object({
@@ -35,8 +43,12 @@ const GoalSchema = z.object({
   backlog: z.number().optional(),
   noGettingAhead: z.boolean().optional(),
   preferredMonthDay: z.union([z.literal("first"), z.literal("last"), z.number()]).optional(),
+  startsAt: z.string().optional(),
+  expiresAt: z.string().optional(),
+  lockInDays: z.boolean().optional(),
   adhoc: z.boolean().optional(),
   parentGoalId: z.string().optional(),
+  milestones: z.array(MilestoneSchema).optional(),
 });
 
 const GoalsArraySchema = z.array(GoalSchema);

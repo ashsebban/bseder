@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { cn } from "@/lib/cn";
 import type { CalendarMonth, CalendarDayMetadata } from "@/features/calendar/types/calendar";
 
@@ -6,6 +7,7 @@ const WEEKDAY_LABELS_FROM_SUN = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
 interface MonthGridProps {
   month: CalendarMonth;
   onSelectDate: (date: Date) => void;
+  onDoubleClickDate: (date: Date) => void;
   showOutsideMonthDays: boolean;
   weekStartsOn?: 0 | 1;
 }
@@ -18,8 +20,9 @@ function buildTimeSlots(meta: CalendarDayMetadata) {
   return slots.slice(0, 2);
 }
 
-export function MonthGrid({ month, onSelectDate, showOutsideMonthDays, weekStartsOn = 0 }: MonthGridProps) {
+export function MonthGrid({ month, onSelectDate, onDoubleClickDate, showOutsideMonthDays, weekStartsOn = 0 }: MonthGridProps) {
   const days = month.weeks.flatMap((week) => week.days);
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const weekdayLabels = weekStartsOn === 1
     ? [...WEEKDAY_LABELS_FROM_SUN.slice(1), WEEKDAY_LABELS_FROM_SUN[0]]
     : WEEKDAY_LABELS_FROM_SUN;
@@ -60,7 +63,18 @@ export function MonthGrid({ month, onSelectDate, showOutsideMonthDays, weekStart
             <button
               key={day.iso}
               type="button"
-              onClick={() => onSelectDate(day.date)}
+              onClick={() => {
+                if (clickTimerRef.current) {
+                  clearTimeout(clickTimerRef.current);
+                  clickTimerRef.current = null;
+                  onDoubleClickDate(day.date);
+                } else {
+                  clickTimerRef.current = setTimeout(() => {
+                    clickTimerRef.current = null;
+                    onSelectDate(day.date);
+                  }, 250);
+                }
+              }}
               className={cn(
                 "group flex min-h-[7.5rem] flex-col rounded-xl border p-3 text-left transition-all duration-150",
                 // Default in-period

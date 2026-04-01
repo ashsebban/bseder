@@ -28,14 +28,19 @@ interface HolidayChipSelectProps {
 }
 
 export function HolidayChipSelect({ value, onChange, onCustomize }: HolidayChipSelectProps) {
-  /** Chip state derived from individual[] — the single source of truth */
   function chipState(catKey: string): "active" | "partial" | "inactive" {
+    // If this category chip was explicitly clicked, it's active
+    if (value.categories.includes(catKey)) return "active";
+    // Partial: some members are in individual[] but NOT because of another selected category
+    // (prevents cross-category bleed — e.g. Yom Tov selecting Yom Kippur shouldn't light up Major Fasts)
     const members = getIndividualKeysForCategories([catKey]);
     if (members.length === 0) return "inactive";
-    const selected = members.filter((k) => value.individual.includes(k)).length;
-    if (selected === members.length) return "active";
-    if (selected > 0) return "partial";
-    return "inactive";
+    const coveredBySelectedCats = new Set(getIndividualKeysForCategories(value.categories));
+    const uncoveredMembers = members.filter((k) => !coveredBySelectedCats.has(k));
+    if (uncoveredMembers.length === 0) return "inactive";
+    const selected = uncoveredMembers.filter((k) => value.individual.includes(k)).length;
+    if (selected === 0) return "inactive";
+    return "partial";
   }
 
   function toggleCategory(catKey: string) {

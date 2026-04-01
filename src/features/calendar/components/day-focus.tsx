@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useDroppable, useDraggable } from "@dnd-kit/core";
+import { arrayMove } from "@dnd-kit/sortable";
 import { Check, X, Settings } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { toIsoDate, todayIso, addDays } from "@/lib/date";
@@ -35,6 +36,8 @@ interface DayFocusProps {
   timelineDefaultDurationMins: number;
   onTimelinePreferenceChange: (key: "timelineSnapMins" | "timelineDefaultDurationMins", value: number) => void;
   onSetDuration: (assignmentId: string, durationMins: number) => void;
+  goalOrder?: string[];
+  onReorderGoals?: (prevIds: string[], newIds: string[]) => void;
 }
 
 // ─── Timeline constants ───────────────────────────────────────────────────────
@@ -144,7 +147,7 @@ function ZmanimStripeSegment({
       />
       {mousePos && hasContent && (
         <div
-          className="pointer-events-none fixed z-[200] min-w-[160px] rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-xl"
+          className="pointer-events-none fixed z-[9999] min-w-[160px] rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-xl"
           style={{ left: mousePos.x + 14, top: mousePos.y - 8 }}
         >
           <p className="text-[11px] font-bold text-slate-700">{info.periodName}</p>
@@ -261,12 +264,11 @@ function EventBlock({
   const endMins = startMins + previewDuration;
   const timeRange = `${formatMinutesAsTime(startMins, timeFormat)}–${formatMinutesAsTime(endMins, timeFormat)}`;
 
-  // Fixed 8px resize handle at bottom; body fills the rest
   const RESIZE_H = 8;
-  const bodyH = Math.max(0, heightPx - RESIZE_H);
-  // Content density tiers
-  const showTimeRange = bodyH >= 36;
-  const tinyCheckbox = bodyH < 18; // 12px checkbox vs 14px
+  // Tiers based on full event height (1px = 1min)
+  const showTimeRange = heightPx >= 44;          // 45 min+
+  const tinyCheckbox  = heightPx <= 20;          // clamped 15-min events only
+  const topAlign      = heightPx >= 40;          // 45 min and 1hr → top; 15/30 min → center
 
   function handleResizePointerDown(e: React.PointerEvent) {
     e.stopPropagation();
@@ -299,60 +301,56 @@ function EventBlock({
       {...attributes}
       style={style}
       className={cn(
-        "group cursor-grab select-none touch-none rounded-md border overflow-hidden active:cursor-grabbing",
+        // Outer div IS the flex row — alignment uses full heightPx, not a cropped bodyH
+        "group relative flex gap-1 px-1.5 cursor-grab select-none touch-none rounded-md border overflow-hidden active:cursor-grabbing",
+        topAlign ? "items-start pt-1" : "items-center",
         assignment.completed
           ? "border-success/20 bg-success/[0.08]"
           : "border-brand/20 bg-brand/[0.07]",
         isDragging && "opacity-40",
       )}
     >
-      {/* Body — vertically centered, always fills available height above resize handle */}
-      <div
-        className="flex items-center gap-1 px-1.5"
-        style={{ height: bodyH }}
+      {/* Checkbox */}
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onToggle(assignment.id); }}
+        onPointerDown={(e) => e.stopPropagation()}
+        className={cn(
+          "flex shrink-0 items-center justify-center rounded-full border transition-all",
+          tinyCheckbox ? "h-3 w-3" : "h-3.5 w-3.5",
+          assignment.completed
+            ? "border-success bg-success"
+            : "border-slate-300 bg-white/80 hover:border-brand/50",
+        )}
       >
-        {/* Checkbox */}
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); onToggle(assignment.id); }}
-          onPointerDown={(e) => e.stopPropagation()}
-          className={cn(
-            "flex shrink-0 items-center justify-center rounded-full border transition-all",
-            tinyCheckbox ? "h-3 w-3" : "h-3.5 w-3.5",
-            assignment.completed
-              ? "border-success bg-success"
-              : "border-slate-300 bg-white/80 hover:border-brand/50",
-          )}
-        >
-          {assignment.completed && <Check className="h-2 w-2 text-white" strokeWidth={3} />}
-        </button>
+        {assignment.completed && <Check className="h-2 w-2 text-white" strokeWidth={3} />}
+      </button>
 
-        {/* Text column */}
-        <div className="min-w-0 flex-1">
-          <p className={cn(
-            "font-semibold leading-none truncate",
-            tinyCheckbox ? "text-[10px]" : "text-[10.5px]",
-            assignment.completed ? "text-slate-400 line-through decoration-slate-300" : "text-slate-800",
-          )}>
-            {goal.title}
-          </p>
-          {showTimeRange && (
-            <p className="mt-[2px] text-[9px] leading-none text-slate-400 truncate">{timeRange}</p>
-          )}
-        </div>
-
-        {/* Remove — hover only */}
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); onRemove(assignment.id); }}
-          onPointerDown={(e) => e.stopPropagation()}
-          className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-        >
-          <X className="h-3 w-3 text-slate-300 hover:text-red-400" strokeWidth={2.5} />
-        </button>
+      {/* Text column */}
+      <div className="min-w-0 flex-1">
+        <p className={cn(
+          "font-semibold leading-none truncate",
+          tinyCheckbox ? "text-[10px]" : "text-[10.5px]",
+          assignment.completed ? "text-slate-400 line-through decoration-slate-300" : "text-slate-800",
+        )}>
+          {goal.title}
+        </p>
+        {showTimeRange && (
+          <p className="mt-[2px] text-[9px] leading-none text-slate-400 truncate">{timeRange}</p>
+        )}
       </div>
 
-      {/* Resize handle */}
+      {/* Remove — hover only */}
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onRemove(assignment.id); }}
+        onPointerDown={(e) => e.stopPropagation()}
+        className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+      >
+        <X className="h-3 w-3 text-slate-300 hover:text-red-400" strokeWidth={2.5} />
+      </button>
+
+      {/* Resize handle — absolute, does NOT participate in flex layout */}
       <div
         onPointerDown={handleResizePointerDown}
         className="absolute bottom-0 left-0 right-0 cursor-s-resize z-20 flex items-center justify-center"
@@ -394,10 +392,11 @@ function DayTimeline({
   const isToday = isoDate === todayIso();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  // Current time indicator
-  const [currentTime, setCurrentTime] = useState(nowTime());
+  // Current time indicator — null until mounted to avoid SSR/client mismatch
+  const [currentTime, setCurrentTime] = useState<string | null>(null);
   useEffect(() => {
     if (!isToday) return;
+    setCurrentTime(nowTime());
     const id = setInterval(() => setCurrentTime(nowTime()), 60_000);
     return () => clearInterval(id);
   }, [isToday]);
@@ -410,9 +409,10 @@ function DayTimeline({
     scrollRef.current.scrollTop = Math.max(0, (clampedHour - TIMELINE_START_HOUR) * PX_PER_HOUR - 120);
   }, [isToday]);
 
-  // Current time position
-  const [ctH, ctM] = currentTime.split(":").map(Number);
-  const ctMinsFromStart = (ctH * 60 + ctM) - TIMELINE_START_HOUR * 60;
+  // Current time position (null until mounted)
+  const ctMinsFromStart = currentTime
+    ? (() => { const [h, m] = currentTime.split(":").map(Number); return (h * 60 + m) - TIMELINE_START_HOUR * 60; })()
+    : -1;
 
   // Scheduled assignments with valid times
   const scheduledAssignments = useMemo(() =>
@@ -522,7 +522,7 @@ function DayTimeline({
 
           {/* Left gutter: zmanim stripe + hour labels */}
           <div
-            className="absolute top-0 bottom-0 pointer-events-none z-10"
+            className="absolute top-0 bottom-0 pointer-events-none z-20"
             style={{ left: 0, width: LEFT_GUTTER }}
           >
             {/* Zmanim stripe segments */}
@@ -611,19 +611,38 @@ function DayTimeline({
 function DailyCheckItem({
   goal,
   isoDate,
+  isToday,
+  now,
+  allIds,
   onToggle,
+  onReorderGoals,
+  zmanim,
 }: {
   goal: Goal;
   isoDate: string;
+  isToday: boolean;
+  now: Date;
+  allIds: string[];
   onToggle: (goalId: string, isoDate: string) => void;
+  onReorderGoals: (prev: string[], next: string[]) => void;
+  zmanim?: DayZmanim;
 }) {
   const isDone = goal.completedDates?.includes(isoDate) ?? false;
+  const timeState = getGoalTimeState(goal, zmanim, isToday);
+  const countdown = isToday ? computeCountdown(goal, zmanim, now, isDone) : null;
   const activeDays = goal.activeDays;
-  const subtitle =
+  const baseSubtitle =
     activeDays && activeDays.length > 0 && activeDays.length < 7
       ? `Daily · ${activeDays[0]}–${activeDays[activeDays.length - 1]}`
       : "Daily";
+  const subtitle =
+    countdown
+      ? `${baseSubtitle} · ${countdown.label}`
+      : timeState === "expired" ? `${baseSubtitle} · expired`
+      : timeState === "not-yet" ? `${baseSubtitle} · not yet`
+      : baseSubtitle;
 
+  const [isSortDragging, setIsSortDragging] = useState(false);
   const { attributes, listeners, setNodeRef, isDragging, transform } = useDraggable({
     id: `daily:${goal.id}`,
   });
@@ -637,17 +656,17 @@ function DailyCheckItem({
       style={style}
       className={cn(
         "group flex w-full cursor-grab select-none touch-none items-start gap-3 rounded-xl px-2 py-2.5 transition hover:bg-slate-50 active:cursor-grabbing",
-        isDragging && "opacity-40",
+        (isDragging || isSortDragging) && "opacity-40",
+        !isDragging && !isSortDragging && timeState !== "active" && "opacity-50",
       )}
     >
-      {/* Drag handle — visual only */}
-      <div className="mt-[3px] shrink-0 text-slate-300 group-hover:text-slate-400 transition-colors">
-        <svg width="8" height="12" viewBox="0 0 8 12" fill="currentColor">
-          <circle cx="2" cy="2" r="1.2"/><circle cx="6" cy="2" r="1.2"/>
-          <circle cx="2" cy="6" r="1.2"/><circle cx="6" cy="6" r="1.2"/>
-          <circle cx="2" cy="10" r="1.2"/><circle cx="6" cy="10" r="1.2"/>
-        </svg>
-      </div>
+      <ChecklistSortHandle
+        goalId={goal.id}
+        allIds={allIds}
+        onReorderGoals={onReorderGoals}
+        onDragStart={() => setIsSortDragging(true)}
+        onDragEnd={() => setIsSortDragging(false)}
+      />
       <button
         type="button"
         onClick={() => onToggle(goal.id, isoDate)}
@@ -667,7 +686,10 @@ function DailyCheckItem({
         >
           {goal.title}
         </p>
-        <p className="mt-0.5 text-[11px] text-slate-400">{subtitle} · drag to schedule</p>
+        <p className={cn(
+          "mt-0.5 text-[11px]",
+          countdown?.urgent ? "font-semibold text-amber-500" : "text-slate-400",
+        )}>{subtitle} · drag to schedule</p>
       </div>
     </div>
   );
@@ -676,30 +698,53 @@ function DailyCheckItem({
 function AssignedCheckItem({
   goal,
   assignment,
+  isToday,
+  now,
+  allIds,
   onToggle,
   onRemove,
+  onReorderGoals,
+  zmanim,
 }: {
   goal: Goal;
   assignment: DayAssignment;
+  isToday: boolean;
+  now: Date;
+  allIds: string[];
   onToggle: (id: string) => void;
   onRemove: (id: string) => void;
+  onReorderGoals: (prev: string[], next: string[]) => void;
+  zmanim?: DayZmanim;
 }) {
+  const [isSortDragging, setIsSortDragging] = useState(false);
   const { attributes, listeners, setNodeRef, isDragging, transform } = useDraggable({
     id: `assignment:${assignment.id}`,
   });
   const style = transform ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`, zIndex: 999 } : undefined;
+
+  const isDone = assignment.completed;
+  const timeState = getGoalTimeState(goal, zmanim, isToday);
+  const countdown = isToday ? computeCountdown(goal, zmanim, now, isDone) : null;
 
   const cadenceLabel =
     goal.cadence === "one-time" && goal.adhoc
       ? "Task"
       : goal.cadence.charAt(0).toUpperCase() + goal.cadence.slice(1);
 
-  const subtitle = [
+  const activeDaysLabel =
+    goal.cadence === "daily" && goal.activeDays && goal.activeDays.length > 0 && goal.activeDays.length < 7
+      ? `${goal.activeDays[0]}–${goal.activeDays[goal.activeDays.length - 1]}`
+      : null;
+
+  const subtitleParts = [
     cadenceLabel,
+    activeDaysLabel,
     assignment.targetAmount ? `${assignment.targetAmount} ${goal.targetUnit ?? "units"}` : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
+    countdown
+      ? countdown.label
+      : timeState === "expired" ? "expired" : timeState === "not-yet" ? "not yet" : null,
+  ].filter(Boolean);
+  const subtitle = subtitleParts.join(" · ");
 
   return (
     <div
@@ -709,17 +754,17 @@ function AssignedCheckItem({
       style={style}
       className={cn(
         "group flex w-full cursor-grab select-none touch-none items-start gap-3 rounded-xl px-2 py-2.5 transition active:cursor-grabbing",
-        isDragging ? "opacity-40" : "hover:bg-slate-50",
+        (isDragging || isSortDragging) ? "opacity-40" : "hover:bg-slate-50",
+        !isDragging && !isSortDragging && timeState !== "active" && !assignment.completed && "opacity-50",
       )}
     >
-      {/* Drag handle — visual only */}
-      <div className="mt-[3px] shrink-0 text-slate-300 group-hover:text-slate-400 transition-colors">
-        <svg width="8" height="12" viewBox="0 0 8 12" fill="currentColor">
-          <circle cx="2" cy="2" r="1.2" /><circle cx="6" cy="2" r="1.2" />
-          <circle cx="2" cy="6" r="1.2" /><circle cx="6" cy="6" r="1.2" />
-          <circle cx="2" cy="10" r="1.2" /><circle cx="6" cy="10" r="1.2" />
-        </svg>
-      </div>
+      <ChecklistSortHandle
+        goalId={goal.id}
+        allIds={allIds}
+        onReorderGoals={onReorderGoals}
+        onDragStart={() => setIsSortDragging(true)}
+        onDragEnd={() => setIsSortDragging(false)}
+      />
 
       {/* Checkbox */}
       <button
@@ -750,7 +795,10 @@ function AssignedCheckItem({
             </span>
           )}
         </div>
-        <p className="mt-0.5 text-[11px] text-slate-400">
+        <p className={cn(
+          "mt-0.5 text-[11px]",
+          countdown?.urgent ? "font-semibold text-amber-500" : "text-slate-400",
+        )}>
           {subtitle}
           {assignment.scheduledTime && !assignment.completed && (
             <span className="ml-1.5 text-brand/60">· {assignment.scheduledTime}</span>
@@ -805,6 +853,121 @@ function OmerCheckItem({ day, isoDate, completed, onToggle }: {
   );
 }
 
+// ─── Native sort handle (no dnd-kit involvement) ─────────────────────────────
+function ChecklistSortHandle({
+  goalId,
+  allIds,
+  onReorderGoals,
+  onDragStart,
+  onDragEnd,
+}: {
+  goalId: string;
+  allIds: string[];
+  onReorderGoals: (prev: string[], next: string[]) => void;
+  onDragStart?: () => void;
+  onDragEnd?: () => void;
+}) {
+  const dragRef = useRef<{ startY: number; startIdx: number } | null>(null);
+  return (
+    <button
+      type="button"
+      tabIndex={-1}
+      className="mt-[3px] shrink-0 cursor-grab touch-none text-slate-300 group-hover:text-slate-400 transition-colors active:cursor-grabbing"
+      onMouseDown={(e) => e.stopPropagation()}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        onDragStart?.();
+        dragRef.current = { startY: e.clientY, startIdx: allIds.indexOf(goalId) };
+      }}
+      onPointerMove={(e) => { if (dragRef.current) e.stopPropagation(); }}
+      onPointerUp={(e) => {
+        if (!dragRef.current) return;
+        e.stopPropagation();
+        const { startY, startIdx } = dragRef.current;
+        dragRef.current = null;
+        onDragEnd?.();
+        const offset = Math.round((e.clientY - startY) / 40);
+        const newIdx = Math.max(0, Math.min(allIds.length - 1, startIdx + offset));
+        if (newIdx !== startIdx) onReorderGoals(allIds, arrayMove(allIds, startIdx, newIdx));
+      }}
+      onPointerCancel={() => { dragRef.current = null; onDragEnd?.(); }}
+    >
+      <svg width="8" height="12" viewBox="0 0 8 12" fill="currentColor">
+        <circle cx="2" cy="2" r="1.2"/><circle cx="6" cy="2" r="1.2"/>
+        <circle cx="2" cy="6" r="1.2"/><circle cx="6" cy="6" r="1.2"/>
+        <circle cx="2" cy="10" r="1.2"/><circle cx="6" cy="10" r="1.2"/>
+      </svg>
+    </button>
+  );
+}
+
+
+// ─── Halachic time state ─────────────────────────────────────────────────────
+function getGoalTimeState(
+  goal: Goal,
+  zmanim: DayZmanim | undefined,
+  isToday: boolean,
+): "active" | "not-yet" | "expired" {
+  if (!isToday || !zmanim || (!goal.startsAt && !goal.expiresAt)) return "active";
+  const [hh, mm] = nowTime().split(":").map(Number);
+  const nowFrac = hh + mm / 60;
+  if (goal.startsAt) {
+    const startPeriod = zmanim.periods.find((p) => p.name === goal.startsAt);
+    if (startPeriod && nowFrac < startPeriod.startHour) return "not-yet";
+  }
+  if (goal.expiresAt) {
+    const expPeriod = zmanim.periods.find((p) => p.name === goal.expiresAt);
+    if (expPeriod && nowFrac >= expPeriod.startHour) return "expired";
+  }
+  return "active";
+}
+
+// ─── Countdown helpers ───────────────────────────────────────────────────────
+function formatDiffMs(ms: number): string {
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 1) return "< 1m";
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+function computeCountdown(
+  goal: Goal,
+  zmanim: DayZmanim | undefined,
+  now: Date,
+  isDone: boolean,
+): { label: string; urgent: boolean } | null {
+  if (!zmanim || (!goal.startsAt && !goal.expiresAt)) return null;
+
+  const startTime = goal.startsAt
+    ? (zmanim.periods.find((p) => p.name === goal.startsAt)?.boundaryTime ?? null)
+    : null;
+  const endTime = goal.expiresAt
+    ? (zmanim.periods.find((p) => p.name === goal.expiresAt)?.boundaryTime ?? null)
+    : null;
+
+  if (isDone) {
+    // Show when it ended if in the past
+    if (endTime && now >= endTime) return { label: "done before deadline", urgent: false };
+    return null;
+  }
+
+  if (startTime && now < startTime) {
+    const diff = startTime.getTime() - now.getTime();
+    return { label: `starts in ${formatDiffMs(diff)}`, urgent: diff < 30 * 60_000 };
+  }
+  if (endTime && now < endTime) {
+    const diff = endTime.getTime() - now.getTime();
+    return { label: `ends in ${formatDiffMs(diff)}`, urgent: diff < 30 * 60_000 };
+  }
+  if (endTime && now >= endTime) {
+    return { label: "expired", urgent: true };
+  }
+  return null;
+}
+
 // ─── Right panel: DayChecklist ────────────────────────────────────────────────
 function DayChecklist({
   date,
@@ -823,6 +986,9 @@ function DayChecklist({
   onRemoveAssignment,
   onAddTask,
   onNavigateToDate,
+  goalOrder = [],
+  onReorderGoals,
+  zmanim,
 }: {
   date: Date;
   relativeLabel: string;
@@ -840,19 +1006,44 @@ function DayChecklist({
   onRemoveAssignment: (id: string) => void;
   onAddTask: (title: string, isoDate: string) => void;
   onNavigateToDate: (date: Date) => void;
+  goalOrder?: string[];
+  onReorderGoals?: (prev: string[], next: string[]) => void;
+  zmanim?: DayZmanim;
 }) {
   const [isAdding, setIsAdding] = useState(false);
   const [draft, setDraft] = useState("");
-  // Droppable zone so goal pills from the tray can be dropped here
+  const [now, setNow] = useState(() => new Date());
   const { setNodeRef: setDropRef, isOver: isOverChecklist } = useDroppable({ id: isoDate });
+
+  useEffect(() => {
+    if (!isToday) return;
+    const id = setInterval(() => setNow(new Date()), 30_000);
+    return () => clearInterval(id);
+  }, [isToday]);
+
+  // Unified sorted list
+  type CheckItem =
+    | { kind: "daily"; goal: Goal }
+    | { kind: "assigned"; goal: Goal; assignment: DayAssignment };
+
+  const allCheckItems: CheckItem[] = [
+    ...dailyGoals.map((g): CheckItem => ({ kind: "daily", goal: g })),
+    ...assignedItems.map(({ goal, assignment }): CheckItem => ({ kind: "assigned", goal, assignment })),
+  ].sort((a, b) => {
+    const ai = (goalOrder ?? []).indexOf(a.goal.id);
+    const bi = (goalOrder ?? []).indexOf(b.goal.id);
+    return (ai === -1 ? Infinity : ai) - (bi === -1 ? Infinity : bi);
+  });
+
+  const itemIds = allCheckItems.map((i) => i.goal.id);
 
   const omerCount = omerDay !== undefined ? 1 : 0;
   const omerDoneCount = omerDay !== undefined && omerCompleted ? 1 : 0;
-  const totalCount = dailyGoals.length + assignedItems.length + omerCount;
+  const totalCount = allCheckItems.length + omerCount;
   const completedCount =
-    dailyGoals.filter((g) => g.completedDates?.includes(isoDate)).length +
-    assignedItems.filter((i) => i.assignment.completed).length +
-    omerDoneCount;
+    allCheckItems.filter((item) =>
+      item.kind === "assigned" ? item.assignment.completed : item.goal.completedDates?.includes(isoDate),
+    ).length + omerDoneCount;
   const allDone = totalCount > 0 && completedCount === totalCount;
 
   const tomorrow = addDays(date, 1);
@@ -925,31 +1116,35 @@ function DayChecklist({
           />
         )}
 
-        {/* Daily goals */}
-        {dailyGoals.map((goal) => (
-          <DailyCheckItem
-            key={goal.id}
-            goal={goal}
-            isoDate={isoDate}
-            onToggle={onToggleDate}
-          />
-        ))}
-
-        {/* Divider */}
-        {dailyGoals.length > 0 && assignedItems.length > 0 && (
-          <div className="mx-2 my-1.5 border-t border-slate-100" />
+        {/* Unified sorted goal list */}
+        {allCheckItems.map((item) =>
+          item.kind === "daily" ? (
+            <DailyCheckItem
+              key={item.goal.id}
+              goal={item.goal}
+              isoDate={isoDate}
+              isToday={isToday}
+              now={now}
+              allIds={itemIds}
+              onToggle={onToggleDate}
+              onReorderGoals={onReorderGoals ?? (() => {})}
+              zmanim={zmanim}
+            />
+          ) : (
+            <AssignedCheckItem
+              key={item.assignment.id}
+              goal={item.goal}
+              assignment={item.assignment}
+              isToday={isToday}
+              now={now}
+              allIds={itemIds}
+              onToggle={onToggleAssignment}
+              onRemove={onRemoveAssignment}
+              onReorderGoals={onReorderGoals ?? (() => {})}
+              zmanim={zmanim}
+            />
+          ),
         )}
-
-        {/* Assigned items */}
-        {assignedItems.map(({ assignment, goal }) => (
-          <AssignedCheckItem
-            key={assignment.id}
-            goal={goal}
-            assignment={assignment}
-            onToggle={onToggleAssignment}
-            onRemove={onRemoveAssignment}
-          />
-        ))}
 
         {/* Empty state */}
         {totalCount === 0 && !isAdding && (
@@ -1032,7 +1227,7 @@ export function DayFocus({
   onToggleAssignment,
   onRemoveAssignment,
   onAddTask,
-  onSetScheduledTime: _onSetScheduledTime,
+  onSetScheduledTime,
   onNavigateToDate,
   showOmer = true,
   completedOmerDates,
@@ -1043,6 +1238,8 @@ export function DayFocus({
   timelineDefaultDurationMins,
   onTimelinePreferenceChange,
   onSetDuration,
+  goalOrder = [],
+  onReorderGoals,
 }: DayFocusProps) {
   const isoDate = toIsoDate(date);
   const isToday = isoDate === todayIso();
@@ -1050,19 +1247,16 @@ export function DayFocus({
   const omerDay = showOmer ? metadata?.omerDay : undefined;
   const omerCompleted = omerDay !== undefined ? (completedOmerDates?.has(isoDate) ?? false) : undefined;
 
-  // Suppress auto-shows for weekly goals replaced by manual drag
   const suppressedAutoShows = new Set<string>(
     dayAssignments
       .filter((a) => a.replacedAutoDate !== undefined)
       .map((a) => `${a.goalId}:${a.replacedAutoDate}`),
   );
 
-  // Daily + auto-weekly goals applicable to this day
   const dailyGoals = getApplicableGoalsForDate(goals, date, excludedByGoal)
     .filter((g) => !dayAssignments.some((a) => a.date === isoDate && a.goalId === g.id))
     .filter((g) => !suppressedAutoShows.has(`${g.id}:${isoDate}`));
 
-  // Explicit assignments for today
   const assignedItems = dayAssignments
     .filter((a) => a.date === isoDate)
     .map((a) => ({ assignment: a, goal: goals.find((g) => g.id === a.goalId) }))
@@ -1100,6 +1294,9 @@ export function DayFocus({
         onRemoveAssignment={onRemoveAssignment}
         onAddTask={onAddTask}
         onNavigateToDate={onNavigateToDate}
+        goalOrder={goalOrder}
+        onReorderGoals={onReorderGoals}
+        zmanim={zmanim}
       />
     </div>
   );

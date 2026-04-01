@@ -6,6 +6,8 @@ import { Card } from "@/components/ui/card";
 import { Drawer } from "@/components/ui/drawer";
 import { GoalRow } from "@/features/goals/components/goal-row";
 import { NewGoalForm } from "@/features/goals/components/new-goal-form";
+import { ProjectGoalCard } from "@/features/goals/components/project-goal-card";
+import type { Milestone } from "@/features/goals/types/goal";
 import {
   computeRollupProgress,
   computeCrossperiodProgress,
@@ -19,7 +21,7 @@ import type { Goal, GoalCadence } from "@/features/goals/types/goal";
 import type { RollupProgress } from "@/features/goals/lib/goal-progress";
 
 const CADENCE_OPTIONS: { label: string; value: GoalCadence }[] = [
-  { label: "One-time", value: "one-time" },
+  { label: "Projects", value: "one-time" },
   { label: "Yearly", value: "yearly" },
   { label: "Monthly", value: "monthly" },
   { label: "Weekly", value: "weekly" },
@@ -27,7 +29,7 @@ const CADENCE_OPTIONS: { label: string; value: GoalCadence }[] = [
 ];
 
 const CADENCE_LABELS: Record<GoalCadence, string> = {
-  "one-time": "One-time",
+  "one-time": "Project",
   yearly: "Yearly",
   monthly: "Monthly",
   weekly: "Weekly",
@@ -111,7 +113,19 @@ const today = startOfDay(new Date());
 
   function handleUpdateProgress(id: string, newValue: number) {
     setGoals((prev) =>
-      prev.map((g) => (g.id === id ? { ...g, current: newValue } : g)),
+      prev.map((g) => {
+        if (g.id !== id) return g;
+        const cap = g.noGettingAhead && g.target !== undefined
+          ? g.target + (g.backlog ?? 0)
+          : Infinity;
+        return { ...g, current: Math.min(newValue, cap) };
+      }),
+    );
+  }
+
+  function handleUpdateMilestones(id: string, milestones: Milestone[]) {
+    setGoals((prev) =>
+      prev.map((g) => (g.id === id ? { ...g, milestones } : g)),
     );
   }
 
@@ -190,7 +204,38 @@ const today = startOfDay(new Date());
 
         {/* Direct goals */}
         <div className="mt-5">
-          {directGoals.length > 0 ? (
+          {activeFilter === "one-time" ? (() => {
+            // Projects = non-adhoc one-time goals; adhoc tasks belong to the day view only
+            const projects = directGoals.filter((g) => !g.adhoc);
+            return projects.length > 0 ? (
+              <>
+                <h3 className="mb-3 text-base font-semibold text-text">Projects</h3>
+                <div className="space-y-3">
+                  {projects.map((goal) => {
+                    const childGoal = goals.find(
+                      (g) => g.parentGoalId === goal.id && g.cadence !== "one-time",
+                    );
+                    return (
+                      <ProjectGoalCard
+                        key={goal.id}
+                        goal={goal}
+                        childGoal={childGoal}
+                        onUpdateProgress={handleUpdateProgress}
+                        onUpdateMilestones={handleUpdateMilestones}
+                        onSaveChildGoal={handleSave}
+                        onEdit={() => handleEdit(goal)}
+                        onDelete={() => handleDelete(goal.id)}
+                      />
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              <p className="py-6 text-center text-sm text-text-subtle">
+                No projects yet. Create one to track long-term goals with milestones.
+              </p>
+            );
+          })() : directGoals.length > 0 ? (
             <>
               <h3 className="mb-1 text-base font-semibold text-text">
                 {CADENCE_LABELS[activeFilter]} goals

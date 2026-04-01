@@ -46,7 +46,7 @@ export function GoalRow({
   const [killStreakOpen, setKillStreakOpen] = useState(false);
 
   const todayIsoStr = todayIso(); // local time — no UTC shift
-  const isBinaryToggle = goal.cadence === "daily" && goal.type === "binary" && !goal.allowCatchup;
+  const isBinaryToggle = goal.cadence === "daily" && goal.type === "binary";
   const isDoneToday = isBinaryToggle && (goal.completedDates?.includes(todayIsoStr) ?? false);
 
   const detail = detailOverride ?? buildGoalDetailText(goal);
@@ -153,7 +153,7 @@ export function GoalRow({
             >
               {isDoneToday ? "Undo today" : "Mark done today"}
             </button>
-          ) : !isBinaryToggle && onUpdateProgress ? (
+          ) : !isBinaryToggle && onUpdateProgress && !rollupProgress ? (
             <button
               type="button"
               onClick={() => {
@@ -184,6 +184,7 @@ export function GoalRow({
           <input
             type="number"
             min={0}
+            max={goal.noGettingAhead && goal.target !== undefined ? goal.target + (goal.backlog ?? 0) : undefined}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             className="w-20 rounded-xl border border-line bg-white px-3 py-1.5 text-sm font-medium text-text shadow-soft focus:border-brand/40 focus:outline-none focus:ring-2 focus:ring-brand/15"

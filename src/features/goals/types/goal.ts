@@ -3,6 +3,16 @@ export type GoalStatus = "ongoing" | "done" | "paused";
 export type GoalType = "binary" | "quantified";
 export type IfUnfinished = "forgive" | "backlog" | "track-failure" | "kill-streak";
 
+/** A named checkpoint on a one-time (project) goal. Cosmetic only — does not affect progress. */
+export interface Milestone {
+  id: string;
+  label: string;
+  /** Units at which this milestone sits on the progress bar (e.g. 9 of 64 daf) */
+  markerAmount?: number;
+  /** ISO date when checked off — cosmetic only, no effect on parent.current */
+  completedDate?: string;
+}
+
 export interface Goal {
   id: string;
   title: string;
@@ -24,13 +34,6 @@ export interface Goal {
   completedDates?: string[];
 
   /**
-   * Whether this goal can be done ahead (catch-up or pre-completion allowed).
-   * false (default) = once per applicable day maximum (e.g. Tefillin)
-   * true = can accumulate across days (e.g. Torah portion, pages read)
-   */
-  allowCatchup?: boolean;
-
-  /**
    * Active days — affects roll-up denominator.
    * e.g. ["Sun","Mon","Tue","Wed","Thu","Fri"] excludes Shabbos from the count.
    */
@@ -45,6 +48,14 @@ export interface Goal {
     categories?: string[];
     individual?: string[];
   };
+
+  /**
+   * Optional halachic time window (daily goals only).
+   * Values are DayZmanim period names, e.g. "Netz HaChama", "Chatzot", "Night".
+   * When zmanim are available the goal dims outside this window.
+   */
+  startsAt?: string;
+  expiresAt?: string;
 
   /** What happens when a recurring goal period ends with progress remaining */
   ifUnfinished?: IfUnfinished;
@@ -77,6 +88,13 @@ export interface Goal {
   preferredMonthDay?: "first" | "last" | number;
 
   /**
+   * When true, this goal's occurrences cannot be dragged to a different day.
+   * The user sets this explicitly in the goal form.
+   * false/undefined (default) = draggable; true = fixed to its scheduled day(s).
+   */
+  lockInDays?: boolean;
+
+  /**
    * True for ad-hoc tasks created via the "+ Add task" inline input in the week grid.
    * These are simple one-off todos (e.g. "buy toothpaste") and should not appear
    * in the goal tray — only in the day column they were assigned to.
@@ -88,4 +106,10 @@ export interface Goal {
    * e.g. a weekly "run 2x" created as a child of a yearly "marathon" goal.
    */
   parentGoalId?: string;
+
+  /**
+   * Named milestones for one-time (project) goals.
+   * Cosmetic checkpoints only — checking them off does not change progress.
+   */
+  milestones?: Milestone[];
 }

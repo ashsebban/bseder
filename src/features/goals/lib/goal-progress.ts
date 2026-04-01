@@ -7,16 +7,41 @@ import type { DayAssignment } from "@/features/planner/lib/day-assignment-store"
 export const DAY_KEYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 export type DayKey = typeof DAY_KEYS[number];
 
-/** Map a category name to the @hebcal/core flag(s) it covers */
-const CATEGORY_FLAGS: Record<string, number> = {
-  "Yom Tov": flags.CHAG,
-  "Erev Yom Tov": flags.EREV,
-  "Chol HaMoed": flags.CHOL_HAMOED,
-  "Rosh Chodesh": flags.ROSH_CHODESH,
-  "Major Fasts": flags.MAJOR_FAST,
-  "Minor Fasts": flags.MINOR_FAST,
-  "Erev Fasts": flags.EREV | flags.MAJOR_FAST | flags.MINOR_FAST,
-  Chanukah: flags.CHANUKAH_CANDLES,
+/**
+ * Category flag definitions for holiday exclusion matching.
+ *
+ * `mask`        — the event must have at least one of these bits set
+ * `forbids`     — if set, the event must NOT have any of these bits
+ * `requiresAny` — if set, the event must ALSO have at least one of these bits
+ *
+ * Why forbids matters:
+ *   In @hebcal/core, Erev Yom Tov events (e.g. "Erev Pesach") carry BOTH flags.CHAG
+ *   and flags.EREV — because Yom Tov halachically begins at nightfall of that Gregorian day.
+ *   Without `forbids: flags.EREV`, the "Yom Tov" category would match Erev Pesach and exclude
+ *   the full Gregorian day, even though the daytime hours are still Erev (pre-holiday).
+ *
+ * Why requiresAny matters for "Erev Fasts":
+ *   The previous definition used `flags.EREV | flags.MAJOR_FAST | flags.MINOR_FAST` as a single
+ *   mask, which matches any event with ANY of those bits — so regular fast days (Yom Kippur,
+ *   17 Tammuz) would incorrectly match "Erev Fasts". The correct intent is events that have
+ *   EREV AND one of the fast flags (e.g. "Erev Tisha B'Av" = EREV + MAJOR_FAST).
+ */
+interface CategoryFlagDef {
+  mask: number;
+  forbids?: number;
+  requiresAny?: number;
+}
+
+const CATEGORY_FLAGS: Record<string, CategoryFlagDef> = {
+  "Yom Tov":      { mask: flags.CHAG,             forbids: flags.EREV },
+  "Erev Yom Tov": { mask: flags.EREV },
+  "Chol HaMoed":  { mask: flags.CHOL_HAMOED },
+  "Rosh Chodesh": { mask: flags.ROSH_CHODESH },
+  "Major Fasts":  { mask: flags.MAJOR_FAST },
+  "Minor Fasts":  { mask: flags.MINOR_FAST },
+  // Erev of a fast: must have EREV flag AND at least one fast flag
+  "Erev Fasts":   { mask: flags.EREV, requiresAny: flags.MAJOR_FAST | flags.MINOR_FAST },
+  Chanukah:       { mask: flags.CHANUKAH_CANDLES },
 };
 
 export interface RollupProgress {
@@ -57,8 +82,12 @@ export function buildExcludedDates(
       const evFlags = ev.getFlags();
 
       for (const cat of categoryExcludes) {
-        const flagMask = CATEGORY_FLAGS[cat];
-        if (flagMask && evFlags & flagMask) {
+        const def = CATEGORY_FLAGS[cat];
+        if (!def) continue;
+        const matches = (evFlags & def.mask) !== 0;
+        const forbidden = def.forbids ? (evFlags & def.forbids) !== 0 : false;
+        const extraReq = def.requiresAny ? (evFlags & def.requiresAny) !== 0 : true;
+        if (matches && !forbidden && extraReq) {
           excludedDates.add(dateStr);
           break;
         }
@@ -66,8 +95,13 @@ export function buildExcludedDates(
 
       if (!excludedDates.has(dateStr)) {
         const desc = ev.getDesc();
+        const normalizedDesc = desc.replace(/\s+/g, "_");
         for (const key of individualExcludes) {
-          if (desc.replace(/\s+/g, "_").includes(key.replace(/\s+/g, "_"))) {
+          const normalizedKey = key.replace(/\s+/g, "_");
+          // Don't let "Erev Pesach" match the "Pesach" individual key.
+          // Erev events must only match against Erev-prefixed keys.
+          if (normalizedDesc.startsWith("Erev_") && !normalizedKey.startsWith("Erev_")) continue;
+          if (normalizedDesc.includes(normalizedKey)) {
             excludedDates.add(dateStr);
             break;
           }
@@ -108,7 +142,11 @@ export function computeRollupProgress(
 
   // Respect startDate: don't count days before the goal began
   const effectiveStartIso = goal.startDate && goal.startDate > periodStartIso ? goal.startDate : periodStartIso;
-  const cursor = new Date(Math.max(periodStart.getTime(), goal.startDate ? new Date(goal.startDate).getTime() : 0));
+  // Parse startDate as LOCAL midnight to avoid UTC-offset shifting the date by a day in UTC+ timezones
+  const startDateLocal = goal.startDate
+    ? (() => { const [y, m, d] = goal.startDate.split("-").map(Number); return new Date(y, m - 1, d); })()
+    : null;
+  const cursor = new Date(Math.max(periodStart.getTime(), startDateLocal ? startDateLocal.getTime() : 0));
 
   while (cursor < periodEnd) {
     const dayKey = DAY_KEYS[cursor.getDay()];
@@ -123,12 +161,24 @@ export function computeRollupProgress(
   }
 
   // Determine done count:
-  // - Binary daily goals: use completedDates for per-day tracking
+  // - Daily goals: union of completedDates AND completed assignments (either mechanism counts)
   // - Assignment-tracked non-daily goals: combine manual assignment completions + auto-show completedDates
   // - Fallback: global goal.current (used when dayAssignments not provided)
   let done: number;
-  if (goal.completedDates && goal.cadence === "daily") {
-    done = goal.completedDates.filter((d) => d >= effectiveStartIso && d < periodEndIso).length;
+  if (goal.cadence === "daily") {
+    // Both completedDates and assignment.completed are valid completion signals for daily goals.
+    // They can diverge when a goal was completed via assignment toggle vs direct daily toggle.
+    const doneSet = new Set<string>(
+      (goal.completedDates ?? []).filter((d) => d >= effectiveStartIso && d < periodEndIso),
+    );
+    if (dayAssignments) {
+      for (const a of dayAssignments) {
+        if (a.goalId === goal.id && a.completed && a.date >= effectiveStartIso && a.date < periodEndIso) {
+          doneSet.add(a.date);
+        }
+      }
+    }
+    done = doneSet.size;
   } else if (dayAssignments !== undefined) {
     const periodKey = computePeriodKey(goal.cadence, periodStart);
     const manualDone = dayAssignments
@@ -196,6 +246,7 @@ export function computeDayProgress(
   goals: Goal[],
   date: Date,
   excludedByGoal?: Map<string, Set<string>>,
+  dayAssignments?: DayAssignment[],
 ): { completed: number; total: number; missed: number } | null {
   const dayKey = DAY_KEYS[date.getDay()];
   const dateIso = toIsoDate(date);
@@ -216,7 +267,13 @@ export function computeDayProgress(
     if (excludedByGoal?.get(goal.id)?.has(dateIso)) continue;
 
     total++;
-    if (goal.completedDates?.includes(dateIso)) {
+    // A daily goal is done if either completedDates has the entry OR a completed assignment exists.
+    // Both are valid completion signals — they can diverge when completion was recorded via
+    // assignment toggle (which updates assignment.completed) vs the daily checklist toggle
+    // (which updates completedDates directly).
+    const doneViaCompletedDates = goal.completedDates?.includes(dateIso) ?? false;
+    const doneViaAssignment = dayAssignments?.some((a) => a.goalId === goal.id && a.date === dateIso && a.completed) ?? false;
+    if (doneViaCompletedDates || doneViaAssignment) {
       completed++;
     } else if (isPast && goal.ifUnfinished === "track-failure") {
       missed++;
@@ -340,16 +397,27 @@ export function computeCrossperiodProgress(
 
   let done = 0;
   if (dayAssignments !== undefined) {
-    // Aggregate completions across ALL goal-periods that fall within the view period
+    // Aggregate completions across ALL goal-periods that fall within the view period.
+    // Mirrors computeRollupProgress: counts both explicit DayAssignments (with periodKey)
+    // AND completedDates entries for auto-show preferred days not covered by an assignment.
     const cursor = new Date(vStart);
     const seenPeriodKeys = new Set<string>();
     while (cursor < vEnd) {
       const pk = computePeriodKey(goal.cadence, cursor);
       if (pk && !seenPeriodKeys.has(pk)) {
         seenPeriodKeys.add(pk);
-        done += dayAssignments
-          .filter((a) => a.goalId === goal.id && a.periodKey === pk && a.completed)
+        const pkAssignments = dayAssignments.filter((a) => a.goalId === goal.id && a.periodKey === pk);
+        const manualDone = pkAssignments
+          .filter((a) => a.completed)
           .reduce((sum, a) => sum + (a.targetAmount ?? 1), 0);
+        const manualDates = new Set(pkAssignments.map((a) => a.date));
+        const { start: gPStart, end: gPEnd } = getPeriodBoundsForCadenceAndDate(goal.cadence, cursor);
+        const gPStartIso = toIsoDate(gPStart);
+        const gPEndIso = toIsoDate(gPEnd);
+        const autoShowDone = (goal.completedDates ?? []).filter(
+          (d) => d >= gPStartIso && d < gPEndIso && !manualDates.has(d),
+        ).length;
+        done += manualDone + autoShowDone;
       }
       if (goal.cadence === "weekly") cursor.setDate(cursor.getDate() + 7);
       else if (goal.cadence === "monthly") cursor.setMonth(cursor.getMonth() + 1);

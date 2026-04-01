@@ -3,7 +3,7 @@ import type { CalendarPreferences, HavdalahOpinion } from "@/features/settings/t
 export const CALENDAR_PREFERENCES_STORAGE_KEY = "planner.calendar-preferences.v1";
 
 export const defaultCalendarPreferences: CalendarPreferences = {
-  locationKey: "",
+  locationKey: "new-york",
   timeFormat: "24h",
   showHebrewDates: false,
   havdalahOpinion: "tzeit-8_5",

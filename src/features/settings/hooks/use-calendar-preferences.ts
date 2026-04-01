@@ -18,6 +18,8 @@ export function useCalendarPreferences() {
       const raw = window.localStorage.getItem(CALENDAR_PREFERENCES_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as Partial<CalendarPreferences>;
+        // Fall back to default locationKey if saved value is empty (pre-default era)
+        if (!parsed.locationKey) parsed.locationKey = defaultCalendarPreferences.locationKey;
         setPreferences({ ...defaultCalendarPreferences, ...parsed });
       }
     } catch {

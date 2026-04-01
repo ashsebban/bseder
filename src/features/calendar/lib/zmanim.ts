@@ -23,17 +23,19 @@ export interface HourZmanInfo {
 
 // ── Period color map ──────────────────────────────────────────────────────────
 const PERIOD_COLORS: Record<string, string> = {
-  "Night":              "#1e2d5e",
-  "Alot HaShachar":    "#5b21b6",
-  "Misheyakir":        "#7c3aed",
-  "Netz HaChama":      "#f59e0b",
-  "Sof Zman Shema":    "#ef4444",
-  "Sof Zman Tefilla":  "#f97316",
-  "Chatzot":           "#eab308",
-  "Mincha Gedola":     "#22c55e",
-  "Mincha Ketana":     "#16a34a",
-  "Plag HaMincha":     "#fb923c",
-  "Bein HaShmashot":   "#dc2626",
+  "Night":                "#1e2d5e",
+  "Alot HaShachar":       "#5b21b6",
+  "Misheyakir":           "#7c3aed",
+  "Netz HaChama":         "#f59e0b",
+  "Sof Zman Shema":       "#ef4444",
+  "Sof Zman Tefilla":     "#f97316",
+  "Chatzot":              "#eab308",
+  "Mincha Gedola":        "#22c55e",
+  "Mincha Ketana":        "#16a34a",
+  "Plag HaMincha":        "#fb923c",
+  "Shkiyah":              "#dc2626",
+  "Bein HaShmashot":      "#b91c1c",
+  "Tzais HaKochavim":     "#1e2d5e",
 };
 
 function safeCall(fn: () => Date): Date | null {
@@ -86,23 +88,26 @@ export function computeDayZmanim(
     const minKet   = safeCall(() => z.minchaKetana());
     const plag     = safeCall(() => z.plagHaMincha());
     const shkiya   = safeCall(() => z.sunset());
+    // Bein HaShmashot: ~13.5 min after shkiyah (most common opinion)
+    const beinHash = shkiya ? new Date(shkiya.getTime() + 13.5 * 60_000) : null;
     const tzeit    = safeCall(() => z.tzeit());
 
     // Ordered boundary list; frac=0 and frac=24 are sentinels
     const rawBoundaries: { frac: number | null; name: string; date: Date | null }[] = [
-      { frac: 0,                             name: "Night",             date: null },
-      { frac: toFractionalHour(alot, tzid),  name: "Alot HaShachar",   date: alot },
-      { frac: toFractionalHour(mish, tzid),  name: "Misheyakir",       date: mish },
-      { frac: toFractionalHour(netz, tzid),  name: "Netz HaChama",     date: netz },
-      { frac: toFractionalHour(szShema, tzid),  name: "Sof Zman Shema",   date: szShema },
-      { frac: toFractionalHour(szTfilla, tzid), name: "Sof Zman Tefilla", date: szTfilla },
-      { frac: toFractionalHour(chatzot, tzid),  name: "Chatzot",          date: chatzot },
-      { frac: toFractionalHour(minGed, tzid),   name: "Mincha Gedola",    date: minGed },
-      { frac: toFractionalHour(minKet, tzid),   name: "Mincha Ketana",    date: minKet },
-      { frac: toFractionalHour(plag, tzid),     name: "Plag HaMincha",    date: plag },
-      { frac: toFractionalHour(shkiya, tzid),   name: "Bein HaShmashot",  date: shkiya },
-      { frac: toFractionalHour(tzeit, tzid),    name: "Night",            date: tzeit },
-      { frac: 24,                            name: "END",               date: null },
+      { frac: 0,                                 name: "Night",             date: null },
+      { frac: toFractionalHour(alot, tzid),      name: "Alot HaShachar",   date: alot },
+      { frac: toFractionalHour(mish, tzid),      name: "Misheyakir",       date: mish },
+      { frac: toFractionalHour(netz, tzid),      name: "Netz HaChama",     date: netz },
+      { frac: toFractionalHour(szShema, tzid),   name: "Sof Zman Shema",   date: szShema },
+      { frac: toFractionalHour(szTfilla, tzid),  name: "Sof Zman Tefilla", date: szTfilla },
+      { frac: toFractionalHour(chatzot, tzid),   name: "Chatzot",          date: chatzot },
+      { frac: toFractionalHour(minGed, tzid),    name: "Mincha Gedola",    date: minGed },
+      { frac: toFractionalHour(minKet, tzid),    name: "Mincha Ketana",    date: minKet },
+      { frac: toFractionalHour(plag, tzid),      name: "Plag HaMincha",    date: plag },
+      { frac: toFractionalHour(shkiya, tzid),    name: "Shkiyah",          date: shkiya },
+      { frac: toFractionalHour(beinHash, tzid),  name: "Bein HaShmashot",  date: beinHash },
+      { frac: toFractionalHour(tzeit, tzid),     name: "Tzais HaKochavim", date: tzeit },
+      { frac: 24,                                name: "END",               date: null },
     ];
 
     // Filter out null fracs (failed computations), keep sentinels, sort ascending

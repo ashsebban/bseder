@@ -18,6 +18,7 @@ interface GoalTrayProps {
   selectedDate: Date;
   view: TrayView;
   weekStartsOn?: 0 | 1;
+  filter?: TrayFilter;
 }
 
 const COLUMNS: { cadence: GoalCadence; label: string }[] = [
@@ -75,6 +76,7 @@ function GoalPill({
   draggable = true,
   overrideTarget,
   overrideUnit,
+  parentTitle,
 }: {
   goal: Goal;
   plannedCount: number;
@@ -84,6 +86,7 @@ function GoalPill({
   draggable?: boolean;
   overrideTarget?: number;
   overrideUnit?: string;
+  parentTitle?: string;
 }) {
   const { attributes, listeners, setNodeRef, isDragging, transform } = useDraggable({
     id: goal.id,
@@ -163,6 +166,9 @@ function GoalPill({
           )}
         </p>
         <p className="truncate text-[10px] font-medium leading-tight text-slate-500">
+          {parentTitle && (
+            <span className="mr-1 text-brand/60">↑ {parentTitle} ·</span>
+          )}
           {line2 || "\u00A0"}
         </p>
         <div className="mt-0.5 h-[5px] w-full overflow-hidden rounded-full bg-slate-100">
@@ -256,6 +262,12 @@ function GoalColumn({
     const isAutoScheduled = goal.cadence === "weekly" && goal.activeDays && goal.activeDays.length > 0;
 
     if (isAutoScheduled) {
+      // For quantified goals, each auto-show slot is worth perDayTarget units (not 1)
+      // so planned/completed stay in the same units as manualPlanned/manualCompleted.
+      const perDayTarget = goal.type === "quantified" && goal.target && goal.activeDays!.length
+        ? Math.ceil(goal.target / goal.activeDays!.length)
+        : 1;
+
       const assigned = getAssignmentsForPeriod(dayAssignments, goal.id, cadence, selectedDate, weekStartsOn);
       const replacedPreferredDays = new Set(
         assigned.filter((a) => a.replacedAutoDate).map((a) => a.replacedAutoDate!),
@@ -276,14 +288,14 @@ function GoalColumn({
           !replacedPreferredDays.has(iso) &&
           !assigned.some((a) => a.date === iso)
         ) {
-          autoPlanned++;
+          autoPlanned += perDayTarget;
         }
       }
 
       const manualDates = new Set(assigned.map((a) => a.date));
       const weekStartIso = toIsoDate(startOfWeek(selectedDate, weekStartsOn));
       const weekEndIso = toIsoDate(endOfWeek(selectedDate, weekStartsOn));
-      const autoCompleted = (goal.completedDates ?? []).filter((d) => {
+      const autoCompletedCount = (goal.completedDates ?? []).filter((d) => {
         if (d < weekStartIso || d > weekEndIso) return false;
         const dayObj = new Date(d + "T00:00:00");
         const dayKey = DAY_KEYS[dayObj.getDay()];
@@ -294,6 +306,7 @@ function GoalColumn({
           !manualDates.has(d)
         );
       }).length;
+      const autoCompleted = autoCompletedCount * perDayTarget;
 
       return { planned: manualPlanned + autoPlanned, completed: manualCompleted + autoCompleted, missed: 0 };
     }
@@ -366,6 +379,9 @@ function GoalColumn({
 
           {visibleGoals.map((goal) => {
             const counts = getGoalCounts(goal);
+            const parentTitle = goal.parentGoalId
+              ? goals.find((g) => g.id === goal.parentGoalId)?.title
+              : undefined;
             return (
               <GoalPill
                 key={goal.id}
@@ -377,6 +393,7 @@ function GoalColumn({
                 draggable={goal.cadence !== "daily"}
                 overrideTarget={counts.overrideTarget}
                 overrideUnit={counts.overrideUnit}
+                parentTitle={parentTitle}
               />
             );
           })}
@@ -399,14 +416,8 @@ function GoalColumn({
   );
 }
 
-const FILTER_OPTIONS: { value: TrayFilter; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "hide-done", label: "Hide done" },
-  { value: "hide-allocated", label: "Hide allocated" },
-];
 
-export function GoalTray({ goals, dayAssignments, selectedDate, view, weekStartsOn = 0 }: GoalTrayProps) {
-  const [filter, setFilter] = useState<TrayFilter>("all");
+export function GoalTray({ goals, dayAssignments, selectedDate, view, weekStartsOn = 0, filter = "all" }: GoalTrayProps) {
 
   const libraryGoals = goals.filter(
     (g) => !g.adhoc && g.status !== "paused" && g.status !== "done",
@@ -432,28 +443,6 @@ export function GoalTray({ goals, dayAssignments, selectedDate, view, weekStarts
 
   return (
     <div>
-      {/* Header row: filter chips flush right */}
-      <div className="mb-2.5 flex items-center gap-1.5">
-        <span className="mr-auto text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-          Show
-        </span>
-        {FILTER_OPTIONS.map(({ value, label }) => (
-          <button
-            key={value}
-            type="button"
-            onClick={() => setFilter(value)}
-            className={cn(
-              "rounded-full px-2.5 py-0.5 text-[10px] font-semibold transition-colors",
-              filter === value
-                ? "bg-brand text-white"
-                : "border border-slate-200 bg-white text-slate-400 hover:text-slate-600",
-            )}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
       <div
         className="grid gap-4"
         style={{ gridTemplateColumns: `repeat(${activeColumns.length}, minmax(0, 1fr))` }}
