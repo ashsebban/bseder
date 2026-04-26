@@ -1,6 +1,8 @@
 import { useRef } from "react";
 import { cn } from "@/lib/cn";
-import type { CalendarMonth, CalendarDayMetadata } from "@/features/calendar/types/calendar";
+import type { CalendarMonth } from "@/features/calendar/types/calendar";
+import { CalendarMetaPills, buildCalendarMetaPills } from "@/components/planner/calendar-meta-pills";
+import { SegmentedProgressBar } from "@/components/planner/segmented-progress-bar";
 
 const WEEKDAY_LABELS_FROM_SUN = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -10,14 +12,6 @@ interface MonthGridProps {
   onDoubleClickDate: (date: Date) => void;
   showOutsideMonthDays: boolean;
   weekStartsOn?: 0 | 1;
-}
-
-function buildTimeSlots(meta: CalendarDayMetadata) {
-  const slots: { label: string; time: string }[] = [];
-  if (meta.fastBegins) slots.push({ label: "Fast", time: meta.fastBegins });
-  if (meta.candleLighting) slots.push({ label: "Light", time: meta.candleLighting });
-  if (meta.shabbosEnds && slots.length < 2) slots.push({ label: "Ends", time: meta.shabbosEnds });
-  return slots.slice(0, 2);
 }
 
 export function MonthGrid({ month, onSelectDate, onDoubleClickDate, showOutsideMonthDays, weekStartsOn = 0 }: MonthGridProps) {
@@ -46,7 +40,7 @@ export function MonthGrid({ month, onSelectDate, onDoubleClickDate, showOutsideM
         {days.map((day) => {
           const showMeta = showOutsideMonthDays || day.inCurrentPeriod;
           const meta = day.metadata;
-          const timeSlots = meta && showMeta ? buildTimeSlots(meta) : [];
+          const timeSlots = showMeta ? buildCalendarMetaPills(meta, { candleLabel: "Light" }) : [];
           const progress = showMeta ? meta?.progress : undefined;
           const hasProgress = !!(progress && progress.total > 0);
           const completedPct = hasProgress ? (progress!.completed / progress!.total) * 100 : 0;
@@ -115,23 +109,7 @@ export function MonthGrid({ month, onSelectDate, onDoubleClickDate, showOutsideM
                 </div>
 
                 {/* Time pills — stacked, compact */}
-                {timeSlots.length > 0 && (
-                  <div className="flex flex-col items-end gap-[3px]">
-                    {timeSlots.map(({ label, time }) => (
-                      <div
-                        key={label}
-                        className="flex items-center gap-[3px] rounded-full border border-brand/15 bg-brand/[0.06] px-1.5 py-[2px]"
-                      >
-                        <span className="text-[8px] font-bold uppercase tracking-wide text-brand/60">
-                          {label}
-                        </span>
-                        <span className="tabular-nums text-[10px] font-semibold leading-none text-slate-700">
-                          {time}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <CalendarMetaPills pills={timeSlots} density="compact" orientation="vertical" align="end" />
               </div>
 
               {/* ── Event label: holiday primary, parsha secondary ── */}
@@ -154,22 +132,19 @@ export function MonthGrid({ month, onSelectDate, onDoubleClickDate, showOutsideM
               {/* ── Progress bar — thin, anchored to bottom ── */}
               {hasProgress && (
                 <div className="mt-auto pt-2.5">
-                  <div className="flex h-[4px] w-full overflow-hidden rounded-full bg-slate-100">
-                    {allDone ? (
-                      <div className="h-full w-full bg-success transition-all duration-500" />
-                    ) : completedPct === 0 && missedPct === 0 ? (
-                      <div className="h-full w-full bg-planned" />
-                    ) : (
-                      <>
-                        {completedPct > 0 && (
-                          <div className="h-full bg-success transition-all duration-500" style={{ width: `${completedPct}%` }} />
-                        )}
-                        {missedPct > 0 && (
-                          <div className="h-full bg-penalty transition-all duration-500" style={{ width: `${missedPct}%` }} />
-                        )}
-                      </>
-                    )}
-                  </div>
+                  <SegmentedProgressBar
+                    segments={
+                      allDone
+                        ? [{ key: "done", widthPct: 100, className: "bg-success" }]
+                        : completedPct === 0 && missedPct === 0
+                          ? [{ key: "planned", widthPct: 100, className: "bg-planned" }]
+                          : [
+                              { key: "done", widthPct: completedPct, className: "bg-success" },
+                              { key: "missed", widthPct: missedPct, className: "bg-penalty" },
+                            ]
+                    }
+                    heightClassName="h-[4px]"
+                  />
                 </div>
               )}
             </button>

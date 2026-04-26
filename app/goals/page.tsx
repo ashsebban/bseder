@@ -1,6 +1,10 @@
+import { redirect } from "next/navigation";
 import { PageShell, PageContainer } from "@/components/ui/page-shell";
 import { AppNav } from "@/components/layout/app-nav";
 import { GoalsWorkspace } from "@/features/goals/components/goals-workspace";
+import { ActiveStreaksWidget, BestStreakWidget } from "@/features/goals/components/streak-widgets";
+import { TodaysFocusWidget } from "@/features/goals/components/todays-focus-widget";
+import { getCurrentActiveUser } from "@/lib/current-active-user";
 
 function WidgetShell({ title, description, height = "h-36" }: { title: string; description: string; height?: string }) {
   return (
@@ -15,7 +19,10 @@ function WidgetShell({ title, description, height = "h-36" }: { title: string; d
   );
 }
 
-export default function GoalsPage() {
+export default async function GoalsPage() {
+  const currentUser = await getCurrentActiveUser();
+  if (!currentUser) redirect("/auth/sign-in");
+
   return (
     <PageShell>
       <AppNav />
@@ -30,26 +37,18 @@ export default function GoalsPage() {
         {/* Stat bar — 4 quick-glance metrics */}
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
           <WidgetShell title="Active Goals" description="Total active goal count" height="h-24" />
-          <WidgetShell title="Best Streak" description="Longest current streak" height="h-24" />
+          <BestStreakWidget storageScope={currentUser.user.id} />
           <WidgetShell title="This Week" description="Goals completed vs. scheduled" height="h-24" />
           <WidgetShell title="On Track" description="% of goals on pace" height="h-24" />
         </div>
 
         {/* Main goals list — full width, stays the hero */}
-        <GoalsWorkspace />
+        <GoalsWorkspace storageScope={currentUser.user.id} />
 
         {/* Second tier — 3 columns */}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-          <WidgetShell
-            title="Streaks"
-            description="Active streaks per goal — current run, longest run, last completed"
-            height="h-48"
-          />
-          <WidgetShell
-            title="Today's Focus"
-            description="Goals due or scheduled for today, with quick-complete actions"
-            height="h-48"
-          />
+          <ActiveStreaksWidget storageScope={currentUser.user.id} />
+          <TodaysFocusWidget storageScope={currentUser.user.id} />
           <WidgetShell
             title="Overdue & At Risk"
             description="Goals falling behind pace or with missed days"

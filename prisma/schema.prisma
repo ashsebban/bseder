@@ -1,0 +1,228 @@
+// B'Seder — Prisma Schema
+// ORM: Prisma 5  |  DB: MySQL (Railway)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Users ────────────────────────────────────────────────────────────────────
+// One row per account. isAdmin is set manually in the DB for the owner.
+// subscriptionStatus is a cached field — updated by the Stripe webhook.
+// deletedAt = soft delete; the row is never physically removed.
+model User {
+  id                 String    @id @default(uuid())
+  email              String    @unique
+  displayName        String?   @db.VarChar(100)
+  passwordHash       String?   @db.VarChar(255)  // null = OAuth-only account
+  avatarUrl          String?   @db.VarChar(500)
+  subscriptionStatus String    @default("free")  // "free" | "pro"
+  isAdmin            Boolean   @default(false)
+  onboardingComplete Boolean   @default(false)
+  referralSource     String?   @db.VarChar(100)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  deletedAt          DateTime?
+
+  // NextAuth relations
+  accounts    Account[]
+  sessions    Session[]
+
+  // App relations
+  preferences UserPreferences?
+  adminEvents AdminEvent[]
+  goals       GoalRecord[]
+  assignments AssignmentRecord[]
+
+  @@map("users")
+}
+
+// ─── NextAuth: OAuth Accounts ─────────────────────────────────────────────────
+// Stores Google OAuth tokens. One user can have multiple OAuth accounts.
+model Account {
+  id                String  @id @default(uuid())
+  userId            String
+  type              String  // "oauth" | "email" | "credentials"
+  provider          String  // "google" | "credentials"
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+// ─── NextAuth: Sessions ───────────────────────────────────────────────────────
+// One row per active browser session. Pruned by NextAuth on access.
+model Session {
+  id           String   @id @default(uuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+// ─── NextAuth: Verification Tokens ───────────────────────────────────────────
+// Used for email magic-link and password reset tokens.
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ─── User Preferences ─────────────────────────────────────────────────────────
+// Calendar display settings. 1:1 with users.
+// Created during onboarding; updated in Settings → Calendar.
+model UserPreferences {
+  userId                      String   @id
+  locationKey                 String   @default("new-york") // matches preset location key
+  timeFormat                  String   @default("12h")       // "12h" | "24h"
+  showHebrewDates             Boolean  @default(true)
+  weekStartsOn                Int      @default(0)           // 0 = Sun, 1 = Mon
+  defaultView                 String   @default("week")      // "month" | "week" | "day"
+  showParsha                  Boolean  @default(true)
+  showRoshChodesh             Boolean  @default(true)
+  showOmer                    Boolean  @default(true)
+  showModernHolidays          Boolean  @default(false)
+  showOutsideMonthDays        Boolean  @default(true)
+  havdalahOpinion             String   @default("tzeit-8_5")
+  observanceLevel             String   @default("unknown") // "shabbos" | "not-shabbos" | "mixed" | "unknown"
+  timelineSnapMins            Int      @default(15)
+  timelineDefaultDurationMins Int      @default(30)
+  updatedAt                   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
+}
+
+// ─── Goals ────────────────────────────────────────────────────────────────────
+model GoalRecord {
+  id                 String    @id @default(uuid())
+  userId             String    @map("user_id")
+  parentGoalId       String?   @map("parent_goal_id")
+  title              String    @db.VarChar(500)
+  cadence            String
+  status             String    @default("ongoing")
+  type               String
+  target             Int?
+  targetUnit         String?   @map("target_unit") @db.VarChar(100)
+  backlog            Int       @default(0)
+  noGettingAhead     Boolean   @default(false) @map("no_getting_ahead")
+  ifUnfinished       String?   @map("if_unfinished")
+  preferredMonthDay  String?   @map("preferred_month_day") @db.VarChar(10)
+  lockInDays         Boolean   @default(false) @map("lock_in_days")
+  adhoc              Boolean   @default(false)
+  startsAt           String?   @map("starts_at") @db.VarChar(100)
+  expiresAt          String?   @map("expires_at") @db.VarChar(100)
+  startDate          DateTime? @map("start_date") @db.Date
+  endDate            DateTime? @map("end_date") @db.Date
+  dueDate            DateTime? @map("due_date") @db.Date
+  endAfterPeriods    Int?      @map("end_after_periods")
+  programKey         String?   @map("program_key") @db.VarChar(50)
+  excludesCategories String?   @map("excludes_categories") @db.Text
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+  deletedAt          DateTime? @map("deleted_at")
+
+  user        User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeDays  GoalActiveDayRecord[]
+  exclusions  GoalExclusionRecord[]
+  milestones  GoalMilestoneRecord[]
+  assignments AssignmentRecord[]
+
+  @@map("goals")
+}
+
+model GoalActiveDayRecord {
+  goalId    String     @map("goal_id")
+  dayOfWeek Int        @map("day_of_week")
+  goal      GoalRecord @relation(fields: [goalId], references: [id], onDelete: Cascade)
+
+  @@id([goalId, dayOfWeek])
+  @@map("goal_active_days")
+}
+
+model GoalExclusionRecord {
+  goalId     String     @map("goal_id")
+  holidayKey String     @map("holiday_key") @db.VarChar(100)
+  goal       GoalRecord @relation(fields: [goalId], references: [id], onDelete: Cascade)
+
+  @@id([goalId, holidayKey])
+  @@map("goal_exclusions")
+}
+
+model GoalMilestoneRecord {
+  id           String     @id @default(uuid())
+  goalId       String     @map("goal_id")
+  label        String     @db.VarChar(500)
+  markerAmount Int?       @map("marker_amount")
+  sortOrder    Int        @default(0) @map("sort_order")
+  completedAt  DateTime?  @map("completed_at")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  deletedAt    DateTime?  @map("deleted_at")
+  goal         GoalRecord @relation(fields: [goalId], references: [id], onDelete: Cascade)
+
+  @@map("goal_milestones")
+}
+
+model AssignmentRecord {
+  id               String     @id @default(uuid())
+  goalId           String     @map("goal_id")
+  userId           String     @map("user_id")
+  date             DateTime   @db.Date
+  periodKey        String?    @map("period_key") @db.VarChar(20)
+  targetAmount     Int?       @map("target_amount")
+  scheduledTime    String?    @map("scheduled_time") @db.VarChar(5)
+  durationMins     Int?       @map("duration_mins")
+  completed        Boolean    @default(false)
+  completedAt      DateTime?  @map("completed_at")
+  actualAmount     Int?       @map("actual_amount")
+  replacedAutoDate DateTime?  @map("replaced_auto_date") @db.Date
+  skipped          Boolean    @default(false)
+  createdAt        DateTime   @default(now()) @map("created_at")
+  updatedAt        DateTime   @updatedAt @map("updated_at")
+  deletedAt        DateTime?  @map("deleted_at")
+
+  goal GoalRecord @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  user User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("assignments")
+}
+
+// ─── Admin Event Log ──────────────────────────────────────────────────────────
+// Append-only log of notable events. Written by auth actions automatically.
+// Displayed in Admin → Logs tab.
+model AdminEvent {
+  id        String   @id @default(uuid())
+  type      String   // "signup" | "signin" | "password-reset" | "error" | "admin-action"
+  userEmail String?  @db.VarChar(320)
+  details   String?  @db.Text
+  createdAt DateTime @default(now())
+
+  // Optional FK — kept nullable so events survive user deletion
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([type])
+  @@map("admin_events")
+}

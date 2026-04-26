@@ -1,11 +1,13 @@
 import { HebrewCalendar, HDate, flags } from "@hebcal/core";
-import { toIsoDate, todayIso, startOfDay, startOfWeek, endOfWeek, startOfMonth, addDays } from "@/lib/date";
+import { parseIsoDate, toIsoDate, todayIso, startOfDay, startOfWeek, endOfWeek, startOfMonth, addDays } from "@/lib/date";
 import type { Goal, GoalCadence } from "@/features/goals/types/goal";
 import { computePeriodKey } from "@/features/planner/lib/period-key";
 import type { DayAssignment } from "@/features/planner/lib/day-assignment-store";
+import { DAY_KEYS, type DayKey, getApplicableGoalsForDate } from "@/features/goals/lib/goal-applicability";
+import { getGoalProgramLabel } from "@/features/goals/lib/goal-programs";
 
-export const DAY_KEYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
-export type DayKey = typeof DAY_KEYS[number];
+export { DAY_KEYS, getApplicableGoalsForDate };
+export type { DayKey };
 
 /**
  * Category flag definitions for holiday exclusion matching.
@@ -142,10 +144,7 @@ export function computeRollupProgress(
 
   // Respect startDate: don't count days before the goal began
   const effectiveStartIso = goal.startDate && goal.startDate > periodStartIso ? goal.startDate : periodStartIso;
-  // Parse startDate as LOCAL midnight to avoid UTC-offset shifting the date by a day in UTC+ timezones
-  const startDateLocal = goal.startDate
-    ? (() => { const [y, m, d] = goal.startDate.split("-").map(Number); return new Date(y, m - 1, d); })()
-    : null;
+  const startDateLocal = goal.startDate ? parseIsoDate(goal.startDate) : null;
   const cursor = new Date(Math.max(periodStart.getTime(), startDateLocal ? startDateLocal.getTime() : 0));
 
   while (cursor < periodEnd) {
@@ -205,36 +204,65 @@ export function computeRollupProgress(
 }
 
 /**
- * Return the list of goals that apply to a specific date for the week grid.
- * Includes:
- *   - Daily goals that match the date's day key and are not excluded
- *   - Binary weekly goals with activeDays set — auto-scheduled, appear on preferred days without dragging
+ * Compute unit-based rollup for quantified daily goals.
+ *
+ * Unlike computeRollupProgress (which is day-count based for daily goals),
+ * this returns values in the goal's quantified units (e.g. pages, reps).
+ * It preserves partial-day completion amounts from assignments.
  */
-export function getApplicableGoalsForDate(
-  goals: Goal[],
-  date: Date,
-  excludedByGoal?: Map<string, Set<string>>,
-): Goal[] {
-  const dayKey = DAY_KEYS[date.getDay()];
-  const dateIso = toIsoDate(date);
-  return goals.filter((goal) => {
-    // Auto-scheduled weekly goals — appear on preferred days (binary and quantified)
-    if (
-      goal.cadence === "weekly" &&
-      goal.activeDays && goal.activeDays.length > 0 &&
-      goal.status !== "paused"
-    ) {
-      if (goal.startDate && dateIso < goal.startDate) return false;
-      return goal.activeDays.includes(dayKey);
+export function computeDailyQuantifiedUnitsRollup(
+  goal: Goal,
+  periodStart: Date,
+  periodEnd: Date,
+  today: Date,
+  dayAssignments?: DayAssignment[],
+): RollupProgress {
+  const dailyTarget = goal.target ?? 0;
+  const dayRollup = computeRollupProgress(goal, periodStart, periodEnd, today, dayAssignments);
+  if (dailyTarget <= 0) {
+    return { done: 0, missed: 0, total: 0, elapsed: 0 };
+  }
+
+  const periodStartIso = toIsoDate(periodStart);
+  const periodEndIso = toIsoDate(periodEnd);
+  const effectiveStartIso = goal.startDate && goal.startDate > periodStartIso
+    ? goal.startDate
+    : periodStartIso;
+
+  const completedUnitsByDate = new Map<string, number>();
+  if (dayAssignments) {
+    for (const assignment of dayAssignments) {
+      if (assignment.goalId !== goal.id || !assignment.completed) continue;
+      if (assignment.date < effectiveStartIso || assignment.date >= periodEndIso) continue;
+      completedUnitsByDate.set(
+        assignment.date,
+        (completedUnitsByDate.get(assignment.date) ?? 0) + (assignment.targetAmount ?? dailyTarget),
+      );
     }
-    // Daily goal logic
-    if (goal.cadence !== "daily" || goal.status === "paused") return false;
-    if (goal.startDate && dateIso < goal.startDate) return false;
-    const activeDays: string[] = goal.activeDays ?? [...DAY_KEYS];
-    if (!activeDays.includes(dayKey)) return false;
-    if (excludedByGoal?.get(goal.id)?.has(dateIso)) return false;
-    return true;
-  });
+  }
+
+  let doneUnits = [...completedUnitsByDate.values()].reduce((sum, amount) => sum + amount, 0);
+  for (const dateIso of (goal.completedDates ?? [])) {
+    if (dateIso < effectiveStartIso || dateIso >= periodEndIso) continue;
+    if (completedUnitsByDate.has(dateIso)) continue;
+    doneUnits += dailyTarget;
+  }
+
+  // Fallback for legacy quantified daily goals that tracked only `current`.
+  if (doneUnits === 0 && !dayAssignments && (goal.completedDates?.length ?? 0) === 0) {
+    doneUnits = Math.min(goal.current ?? 0, dayRollup.total * dailyTarget);
+  }
+
+  const missedUnits = goal.ifUnfinished === "track-failure"
+    ? Math.max(0, dayRollup.elapsed * dailyTarget - doneUnits)
+    : dayRollup.missed * dailyTarget;
+
+  return {
+    done: doneUnits,
+    missed: missedUnits,
+    total: dayRollup.total * dailyTarget,
+    elapsed: dayRollup.elapsed * dailyTarget,
+  };
 }
 
 /**
@@ -364,10 +392,12 @@ export function getPeriodBoundsForCadenceAndDate(
  * Compute a roll-up RollupProgress for a goal when viewed through a different cadence lens.
  *
  * Used in GoalsWorkspace when showing lower-cadence goals inside a higher-cadence view
- * (e.g., weekly goals shown inside the monthly view). Scales the target proportionally
- * by how many goal periods fit inside the view period.
+ * (e.g., weekly goals shown inside the monthly view). Counts the actual goal periods
+ * touched by the view window, then aggregates progress across those periods.
  *
- * For daily goals: delegates to computeRollupProgress with the view-period bounds directly.
+ * For daily goals:
+ * - binary goals use day-count rollup
+ * - quantified goals use unit-level rollup (preserving partial assignment amounts)
  * For non-daily goals: sums completions across ALL goal-periods within the view period.
  *
  * Pass referenceDate to resolve period bounds relative to a specific date (e.g. selectedDate
@@ -386,52 +416,192 @@ export function computeCrossperiodProgress(
 
   if (goal.cadence === "daily") {
     const { start, end } = getPeriodBoundsForCadenceAndDate(viewCadence, ref);
+    if (goal.type === "quantified" && goal.target) {
+      return computeDailyQuantifiedUnitsRollup(goal, start, end, today, dayAssignments);
+    }
     return computeRollupProgress(goal, start, end, today, dayAssignments);
   }
 
   const { start: vStart, end: vEnd } = getPeriodBoundsForCadenceAndDate(viewCadence, ref);
-  const { start: gStart, end: gEnd } = getPeriodBoundsForCadenceAndDate(goal.cadence, ref);
-  const viewDays = Math.round((vEnd.getTime() - vStart.getTime()) / 864e5);
-  const goalDays = Math.round((gEnd.getTime() - gStart.getTime()) / 864e5);
-  const scale = Math.max(1, Math.round(viewDays / goalDays));
+  const periods = new Map<string, { startIso: string; endIso: string }>();
+  const cursor = new Date(vStart);
+  while (cursor < vEnd) {
+    const iso = toIsoDate(cursor);
+    if (goal.startDate && iso < goal.startDate) {
+      cursor.setDate(cursor.getDate() + 1);
+      continue;
+    }
+    if (goal.endDate && iso > goal.endDate) {
+      cursor.setDate(cursor.getDate() + 1);
+      continue;
+    }
+    const pk = computePeriodKey(goal.cadence, cursor);
+    if (pk && !periods.has(pk)) {
+      const { start, end } = getPeriodBoundsForCadenceAndDate(goal.cadence, cursor);
+      periods.set(pk, { startIso: toIsoDate(start), endIso: toIsoDate(end) });
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  const periodCount = periods.size;
 
   let done = 0;
   if (dayAssignments !== undefined) {
-    // Aggregate completions across ALL goal-periods that fall within the view period.
-    // Mirrors computeRollupProgress: counts both explicit DayAssignments (with periodKey)
-    // AND completedDates entries for auto-show preferred days not covered by an assignment.
-    const cursor = new Date(vStart);
-    const seenPeriodKeys = new Set<string>();
-    while (cursor < vEnd) {
-      const pk = computePeriodKey(goal.cadence, cursor);
-      if (pk && !seenPeriodKeys.has(pk)) {
-        seenPeriodKeys.add(pk);
-        const pkAssignments = dayAssignments.filter((a) => a.goalId === goal.id && a.periodKey === pk);
-        const manualDone = pkAssignments
-          .filter((a) => a.completed)
-          .reduce((sum, a) => sum + (a.targetAmount ?? 1), 0);
-        const manualDates = new Set(pkAssignments.map((a) => a.date));
-        const { start: gPStart, end: gPEnd } = getPeriodBoundsForCadenceAndDate(goal.cadence, cursor);
-        const gPStartIso = toIsoDate(gPStart);
-        const gPEndIso = toIsoDate(gPEnd);
-        const autoShowDone = (goal.completedDates ?? []).filter(
-          (d) => d >= gPStartIso && d < gPEndIso && !manualDates.has(d),
-        ).length;
-        done += manualDone + autoShowDone;
-      }
-      if (goal.cadence === "weekly") cursor.setDate(cursor.getDate() + 7);
-      else if (goal.cadence === "monthly") cursor.setMonth(cursor.getMonth() + 1);
-      else cursor.setFullYear(cursor.getFullYear() + 1);
+    // Aggregate completions across each goal period touched by the view.
+    // Includes legacy assignments that predate periodKey by falling back to date bounds.
+    for (const [pk, bounds] of periods) {
+      const pkAssignments = dayAssignments.filter(
+        (assignment) =>
+          assignment.goalId === goal.id &&
+          (
+            assignment.periodKey === pk ||
+            (assignment.periodKey === undefined &&
+              assignment.date >= bounds.startIso &&
+              assignment.date < bounds.endIso)
+          ),
+      );
+      const manualDone = pkAssignments
+        .filter((assignment) => assignment.completed)
+        .reduce((sum, assignment) => sum + (assignment.targetAmount ?? 1), 0);
+      const manualDates = new Set(pkAssignments.map((assignment) => assignment.date));
+      const autoShowDone = (goal.completedDates ?? []).filter(
+        (dateIso) => dateIso >= bounds.startIso && dateIso < bounds.endIso && !manualDates.has(dateIso),
+      ).length;
+      done += manualDone + autoShowDone;
     }
   } else {
     done = goal.current ?? 0;
   }
 
   if (goal.type === "quantified") {
-    return { done, total: (goal.target ?? 0) * scale, missed: 0, elapsed: 0 };
+    return { done, total: (goal.target ?? 0) * periodCount, missed: 0, elapsed: 0 };
   }
   // Binary non-daily: expected completions in the view period
-  return { done, total: scale, missed: 0, elapsed: 0 };
+  return { done, total: periodCount, missed: 0, elapsed: 0 };
+}
+
+/**
+ * Compute the current streak for a daily binary goal — how many consecutive
+ * applicable days (before today) have been completed.
+ * Returns 0 for non-daily or non-binary goals.
+ */
+export function computeCurrentStreak(goal: Goal, today: Date): number {
+  if (goal.type !== "binary" || goal.cadence !== "daily") return 0;
+  const completed = new Set(goal.completedDates ?? []);
+  const activeDayKeys: string[] = goal.activeDays ?? [...DAY_KEYS];
+
+  // Build a 2-year exclusion window to cover long streaks
+  const rangeStart = new Date(today.getFullYear() - 2, 0, 1);
+  const excluded = buildExcludedDates(
+    rangeStart,
+    today,
+    goal.excludes?.categories ?? [],
+    goal.excludes?.individual ?? [],
+  );
+
+  let streak = 0;
+  const cursor = new Date(today);
+  cursor.setDate(cursor.getDate() - 1);
+
+  for (let i = 0; i < 730; i++) {
+    const dayKey = DAY_KEYS[cursor.getDay()];
+    const dateStr = toIsoDate(cursor);
+    if (goal.startDate && dateStr < goal.startDate) break;
+    if (!activeDayKeys.includes(dayKey) || excluded.has(dateStr)) {
+      cursor.setDate(cursor.getDate() - 1);
+      continue;
+    }
+    if (completed.has(dateStr)) {
+      streak++;
+      cursor.setDate(cursor.getDate() - 1);
+    } else {
+      break;
+    }
+  }
+  return streak;
+}
+
+export interface GoalStreakSummary {
+  goalId: string;
+  title: string;
+  currentStreak: number;
+  lastCompletedDate?: string;
+}
+
+function latestCompletedDate(goal: Goal): string | undefined {
+  const dates = goal.completedDates ?? [];
+  let latest: string | undefined;
+  for (const date of dates) {
+    if (!latest || date > latest) latest = date;
+  }
+  return latest;
+}
+
+export function computeActiveGoalStreaks(goals: Goal[], today: Date): GoalStreakSummary[] {
+  const todayIso = toIsoDate(today);
+
+  return goals
+    .filter((goal) =>
+      goal.status === "ongoing" &&
+      goal.type === "binary" &&
+      goal.cadence === "daily" &&
+      (!goal.startDate || goal.startDate <= todayIso) &&
+      (!goal.endDate || goal.endDate >= todayIso),
+    )
+    .map((goal) => ({
+      goalId: goal.id,
+      title: goal.title,
+      currentStreak: computeCurrentStreak(goal, today),
+      lastCompletedDate: latestCompletedDate(goal),
+    }))
+    .filter((summary) => summary.currentStreak > 0)
+    .sort((a, b) => {
+      if (b.currentStreak !== a.currentStreak) return b.currentStreak - a.currentStreak;
+      if ((b.lastCompletedDate ?? "") !== (a.lastCompletedDate ?? "")) {
+        return (b.lastCompletedDate ?? "").localeCompare(a.lastCompletedDate ?? "");
+      }
+      return a.title.localeCompare(b.title);
+    });
+}
+
+export function computeBestStreak(goals: Goal[], today: Date): GoalStreakSummary | null {
+  return computeActiveGoalStreaks(goals, today)[0] ?? null;
+}
+
+/**
+ * Returns true if a kill-streak daily binary goal's streak was already broken
+ * before the given date — i.e., the most recent applicable day before `date`
+ * was not completed. Used to suppress new planner slots when the streak is gone.
+ *
+ * Returns false for goals that are not daily binary kill-streak goals, or when
+ * no previous applicable day exists (first day of the goal).
+ */
+export function wasStreakBrokenBefore(goal: Goal, date: Date): boolean {
+  if (goal.ifUnfinished !== "kill-streak" || goal.type !== "binary" || goal.cadence !== "daily") {
+    return false;
+  }
+  const completed = new Set(goal.completedDates ?? []);
+  const activeDayKeys: string[] = goal.activeDays ?? [...DAY_KEYS];
+  const rangeStart = new Date(date.getFullYear() - 1, 0, 1);
+  const excluded = buildExcludedDates(
+    rangeStart,
+    date,
+    goal.excludes?.categories ?? [],
+    goal.excludes?.individual ?? [],
+  );
+
+  const cursor = new Date(date);
+  cursor.setDate(cursor.getDate() - 1);
+  for (let i = 0; i < 60; i++) {
+    const dayKey = DAY_KEYS[cursor.getDay()];
+    const dateStr = toIsoDate(cursor);
+    if (goal.startDate && dateStr < goal.startDate) return false;
+    if (!activeDayKeys.includes(dayKey) || excluded.has(dateStr)) {
+      cursor.setDate(cursor.getDate() - 1);
+      continue;
+    }
+    return !completed.has(dateStr);
+  }
+  return false;
 }
 
 /** Percentage progress for quantified goals with a target. Returns 0 if no target. */
@@ -441,8 +611,13 @@ export function computeSimpleProgressPercent(goal: Goal): number {
 }
 
 /** Build the subtitle/detail string displayed next to a goal's title in GoalRow. */
-export function buildGoalDetailText(goal: Goal): string {
+export function buildGoalDetailText(goal: Goal, referenceDate: Date = new Date()): string {
   const parts: string[] = [];
+  const programLabel = getGoalProgramLabel(goal, referenceDate);
+
+  if (programLabel) {
+    parts.push(programLabel);
+  }
 
   if (goal.type === "binary") {
     if (goal.cadence === "daily" && goal.completedDates !== undefined) {

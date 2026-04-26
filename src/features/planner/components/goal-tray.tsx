@@ -4,10 +4,17 @@ import { useState } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import { cn } from "@/lib/cn";
 import { startOfWeek, endOfWeek, startOfMonth, endOfMonth, toIsoDate } from "@/features/calendar/lib/date";
+import { DailyBacklogBadge } from "@/components/planner/daily-backlog-badge";
+import { EditableGoalTitle, GoalRowGripIcon } from "@/features/calendar/components/goal-list-row";
 import type { Goal, GoalCadence } from "@/features/goals/types/goal";
 import type { DayAssignment } from "@/features/planner/lib/day-assignment-store";
 import { computePeriodKey } from "@/features/planner/lib/period-key";
-import { computeRollupProgress, computeCrossperiodProgress } from "@/features/goals/lib/goal-progress";
+import { computeRollupProgress, computeCrossperiodProgress, computeDailyQuantifiedUnitsRollup } from "@/features/goals/lib/goal-progress";
+import { isPrebuiltGoal } from "@/features/goals/lib/prebuilt-goals";
+import { SegmentedProgressBar } from "@/components/planner/segmented-progress-bar";
+import { getDailyBacklogEntries } from "@/features/goals/lib/daily-backlog";
+import { getGoalProgramLabel } from "@/features/goals/lib/goal-programs";
+import { DAY_KEYS } from "@/features/goals/lib/goal-applicability";
 
 type TrayFilter = "all" | "hide-done" | "hide-allocated";
 type TrayView = "week" | "month";
@@ -19,6 +26,8 @@ interface GoalTrayProps {
   view: TrayView;
   weekStartsOn?: 0 | 1;
   filter?: TrayFilter;
+  onRenameGoal: (goalId: string, nextTitle: string) => void;
+  onToggleDate: (goalId: string, isoDate: string) => void;
 }
 
 const COLUMNS: { cadence: GoalCadence; label: string }[] = [
@@ -31,6 +40,46 @@ const COLUMNS: { cadence: GoalCadence; label: string }[] = [
 
 const PAGE_SIZE = 2;
 
+function computeGoalStatusLabel({
+  plannedCount,
+  completedCount,
+  missedCount,
+  target,
+  unit,
+}: {
+  plannedCount: number;
+  completedCount: number;
+  missedCount: number;
+  target: number;
+  unit: string;
+}): string {
+  const hasTarget = target > 0;
+  const targetLabel = hasTarget ? target : "?";
+
+  if (hasTarget && completedCount >= target) {
+    return `${completedCount}/${target}${unit} · all done`;
+  }
+  if (missedCount > 0 && completedCount === 0) {
+    return `${missedCount} missed · 0/${targetLabel}${unit}`;
+  }
+  if (missedCount > 0) {
+    return `${completedCount} done · ${missedCount} missed`;
+  }
+  if (completedCount > 0) {
+    return plannedCount >= target
+      ? `${completedCount}/${target}${unit}`
+      : `${completedCount} done · ${plannedCount}/${targetLabel}${unit}`;
+  }
+  if (plannedCount > 0) {
+    const suffix = hasTarget && plannedCount > target ? ` · +${plannedCount - target} ahead` : "";
+    return `${plannedCount}/${targetLabel}${unit} planned${suffix}`;
+  }
+  if (hasTarget) {
+    return `0/${target}${unit}`;
+  }
+  return "";
+}
+
 /** Returns only the assignments that belong to the goal's current period.
  *  Prefers periodKey-based filtering (accurate after moves) with date-range fallback for legacy data. */
 function getAssignmentsForPeriod(
@@ -42,29 +91,34 @@ function getAssignmentsForPeriod(
 ): DayAssignment[] {
   const relevant = assignments.filter((a) => a.goalId === goalId);
   const periodKey = computePeriodKey(cadence, selectedDate);
+  const isInSelectedDateRange = (assignment: DayAssignment): boolean => {
+    switch (cadence) {
+      case "weekly": {
+        const start = toIsoDate(startOfWeek(selectedDate, weekStartsOn));
+        const end = toIsoDate(endOfWeek(selectedDate, weekStartsOn));
+        return assignment.date >= start && assignment.date <= end;
+      }
+      case "monthly": {
+        const start = toIsoDate(startOfMonth(selectedDate));
+        const end = toIsoDate(endOfMonth(selectedDate));
+        return assignment.date >= start && assignment.date <= end;
+      }
+      case "yearly": {
+        const year = selectedDate.getFullYear().toString();
+        return assignment.date.startsWith(`${year}-`);
+      }
+      default:
+        return true;
+    }
+  };
 
   if (periodKey && relevant.some((a) => a.periodKey !== undefined)) {
-    return relevant.filter((a) => a.periodKey === periodKey || a.periodKey === undefined);
+    return relevant.filter(
+      (a) => a.periodKey === periodKey || (a.periodKey === undefined && isInSelectedDateRange(a)),
+    );
   }
 
-  switch (cadence) {
-    case "weekly": {
-      const start = toIsoDate(startOfWeek(selectedDate, weekStartsOn));
-      const end = toIsoDate(endOfWeek(selectedDate, weekStartsOn));
-      return relevant.filter((a) => a.date >= start && a.date <= end);
-    }
-    case "monthly": {
-      const start = toIsoDate(startOfMonth(selectedDate));
-      const end = toIsoDate(endOfMonth(selectedDate));
-      return relevant.filter((a) => a.date >= start && a.date <= end);
-    }
-    case "yearly": {
-      const year = selectedDate.getFullYear().toString();
-      return relevant.filter((a) => a.date.startsWith(`${year}-`));
-    }
-    default:
-      return relevant;
-  }
+  return relevant.filter(isInSelectedDateRange);
 }
 
 function GoalPill({
@@ -77,6 +131,10 @@ function GoalPill({
   overrideTarget,
   overrideUnit,
   parentTitle,
+  onRenameGoal,
+  programLabel,
+  dailyBacklogCount = 0,
+  onResolveBacklogDate,
 }: {
   goal: Goal;
   plannedCount: number;
@@ -87,18 +145,15 @@ function GoalPill({
   overrideTarget?: number;
   overrideUnit?: string;
   parentTitle?: string;
+  onRenameGoal: (goalId: string, nextTitle: string) => void;
+  programLabel?: string | null;
+  dailyBacklogCount?: number;
+  onResolveBacklogDate?: (isoDate: string) => void;
 }) {
-  const { attributes, listeners, setNodeRef, isDragging, transform } = useDraggable({
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: goal.id,
     disabled: !draggable,
   });
-
-  const dragStyle = transform && draggable
-    ? {
-        transform: `translate3d(${transform.x}px, ${transform.y}px, 0) rotate(1.5deg) scale(1.04)`,
-        zIndex: 999,
-      }
-    : undefined;
 
   const effectiveTarget = overrideTarget ?? (goal.target ?? (goal.type === "binary" ? 1 : 0));
   const hasTarget = effectiveTarget > 0;
@@ -106,7 +161,6 @@ function GoalPill({
   const unit = overrideUnit ?? (goal.targetUnit ? ` ${goal.targetUnit}` : "");
 
   const allDone = hasTarget && completedCount >= target;
-  const overagePlanned = hasTarget && plannedCount > target;
 
   const completedPct = hasTarget ? Math.min(100, (completedCount / target) * 100) : 0;
   const missedPct = hasTarget ? Math.min(100 - completedPct, (missedCount / target) * 100) : 0;
@@ -114,24 +168,7 @@ function GoalPill({
     ? Math.min(100 - completedPct - missedPct, (Math.max(0, plannedCount - completedCount - missedCount) / target) * 100)
     : plannedCount > 0 ? 100 : 0;
 
-  let line2 = "";
-  if (allDone) {
-    line2 = `${completedCount}/${target}${unit} · all done`;
-  } else if (missedCount > 0 && completedCount === 0) {
-    line2 = `${missedCount} missed · 0/${hasTarget ? target : "?"}${unit}`;
-  } else if (missedCount > 0) {
-    line2 = `${completedCount} done · ${missedCount} missed`;
-  } else if (completedCount > 0) {
-    // When planned = target (fully scheduled), the X/X fraction is redundant — show done/total directly
-    line2 = plannedCount >= target
-      ? `${completedCount}/${target}${unit}`
-      : `${completedCount} done · ${plannedCount}/${hasTarget ? target : "?"}${unit}`;
-  } else if (plannedCount > 0) {
-    const suffix = overagePlanned ? ` · +${plannedCount - target} ahead` : "";
-    line2 = `${plannedCount}/${hasTarget ? target : "?"}${unit} planned${suffix}`;
-  } else if (hasTarget) {
-    line2 = `0/${target}${unit}`;
-  }
+  const line2 = computeGoalStatusLabel({ plannedCount, completedCount, missedCount, target, unit });
 
   const stripeClass = allDone
     ? "bg-success"
@@ -148,46 +185,54 @@ function GoalPill({
       ref={draggable ? setNodeRef : undefined}
       {...(draggable ? listeners : {})}
       {...(draggable ? attributes : {})}
-      style={dragStyle}
       className={cn(
         "group flex select-none touch-none overflow-hidden rounded-lg border border-slate-200 bg-white transition-shadow",
         draggable
           ? "cursor-grab active:cursor-grabbing hover:shadow-md hover:border-brand/30"
           : "cursor-default",
-        isDragging ? "shadow-2xl ring-1 ring-slate-900/[0.08]" : "shadow-sm",
+        isDragging ? "opacity-60 ring-1 ring-brand/20" : "shadow-sm",
       )}
     >
       <div className={cn("w-1 shrink-0 transition-colors duration-300", stripeClass)} />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5 px-2.5 pt-1.5 pb-1.5">
-        <p className="truncate text-[12px] font-semibold leading-snug text-slate-800">
-          {goal.title}
-          {periodLabel && (
-            <span className="ml-1 font-normal text-slate-400">({periodLabel})</span>
-          )}
-        </p>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <EditableGoalTitle
+            title={goal.title}
+            onRename={isPrebuiltGoal(goal.id) ? undefined : (nextTitle) => onRenameGoal(goal.id, nextTitle)}
+            className="truncate text-[12px] font-semibold leading-snug text-slate-800"
+            inputClassName="text-[12px] font-semibold"
+            suffix={periodLabel ? (
+              <span className="ml-1 font-normal text-slate-400">({periodLabel})</span>
+            ) : undefined}
+          />
+          {dailyBacklogCount > 0 ? (
+            <DailyBacklogBadge
+              goalTitle={goal.title}
+              entries={getDailyBacklogEntries(goal, new Date())}
+              onResolveDate={onResolveBacklogDate}
+              compact
+            />
+          ) : null}
+        </div>
         <p className="truncate text-[10px] font-medium leading-tight text-slate-500">
           {parentTitle && (
             <span className="mr-1 text-brand/60">↑ {parentTitle} ·</span>
           )}
-          {line2 || "\u00A0"}
+          {[programLabel, line2].filter(Boolean).join(" · ") || "\u00A0"}
         </p>
-        <div className="mt-0.5 h-[5px] w-full overflow-hidden rounded-full bg-slate-100">
-          <div className="flex h-full">
-            <div className={cn("h-full transition-all duration-300", allDone ? "bg-success" : "bg-brand")} style={{ width: `${completedPct}%` }} />
-            {missedPct > 0 && (
-              <div className="h-full bg-penalty transition-all duration-300" style={{ width: `${missedPct}%` }} />
-            )}
-            <div className="h-full bg-planned transition-all duration-300" style={{ width: `${pendingPct}%` }} />
-          </div>
-        </div>
+        <SegmentedProgressBar
+          className="mt-0.5"
+          heightClassName="h-[5px]"
+          segments={[
+            { key: "done", widthPct: completedPct, className: allDone ? "bg-success" : "bg-brand" },
+            { key: "missed", widthPct: missedPct, className: "bg-penalty" },
+            { key: "pending", widthPct: pendingPct, className: "bg-planned" },
+          ]}
+        />
       </div>
       {draggable && (
         <div className="flex shrink-0 items-center px-1.5 text-slate-300 group-hover:text-slate-400 transition-colors">
-          <svg width="8" height="12" viewBox="0 0 8 12" fill="currentColor">
-            <circle cx="2" cy="2" r="1.2"/><circle cx="6" cy="2" r="1.2"/>
-            <circle cx="2" cy="6" r="1.2"/><circle cx="6" cy="6" r="1.2"/>
-            <circle cx="2" cy="10" r="1.2"/><circle cx="6" cy="10" r="1.2"/>
-          </svg>
+          <GoalRowGripIcon />
         </div>
       )}
     </div>
@@ -203,6 +248,8 @@ function GoalColumn({
   filter,
   view,
   weekStartsOn = 0,
+  onRenameGoal,
+  onToggleDate,
 }: {
   cadence: GoalCadence;
   label: string;
@@ -212,10 +259,10 @@ function GoalColumn({
   filter: TrayFilter;
   view: TrayView;
   weekStartsOn?: 0 | 1;
+  onRenameGoal: (goalId: string, nextTitle: string) => void;
+  onToggleDate: (goalId: string, isoDate: string) => void;
 }) {
   const [offset, setOffset] = useState(0);
-
-  const DAY_KEYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
   function getGoalCounts(goal: Goal): {
     planned: number;
@@ -223,6 +270,7 @@ function GoalColumn({
     missed: number;
     overrideTarget?: number;
     overrideUnit?: string;
+    dailyBacklogCount?: number;
   } {
     // ── Daily: use computeRollupProgress for the relevant period ──
     if (goal.cadence === "daily") {
@@ -238,12 +286,25 @@ function GoalColumn({
         periodEnd.setDate(periodStart.getDate() + 7);
       }
       const rollup = computeRollupProgress(goal, periodStart, periodEnd, today, dayAssignments);
+      // Quantified daily: use unit-level rollup (preserves partial completions).
+      if (goal.type === "quantified" && goal.target) {
+        const units = computeDailyQuantifiedUnitsRollup(goal, periodStart, periodEnd, today, dayAssignments);
+        return {
+          planned: units.total,
+          completed: units.done,
+          missed: units.missed,
+          overrideTarget: units.total,
+          overrideUnit: goal.targetUnit ? ` ${goal.targetUnit}` : "",
+          dailyBacklogCount: getDailyBacklogEntries(goal, today).length,
+        };
+      }
       return {
         planned: rollup.total,
         completed: rollup.done,
         missed: rollup.missed,
         overrideTarget: rollup.total,
         overrideUnit: " days",
+        dailyBacklogCount: getDailyBacklogEntries(goal, today).length,
       };
     }
 
@@ -269,11 +330,12 @@ function GoalColumn({
         : 1;
 
       const assigned = getAssignmentsForPeriod(dayAssignments, goal.id, cadence, selectedDate, weekStartsOn);
+      const nonSkipped = assigned.filter((a) => !a.skipped);
       const replacedPreferredDays = new Set(
         assigned.filter((a) => a.replacedAutoDate).map((a) => a.replacedAutoDate!),
       );
-      const manualPlanned = assigned.reduce((s, a) => s + (a.targetAmount ?? 1), 0);
-      const manualCompleted = assigned.filter((a) => a.completed).reduce((s, a) => s + (a.targetAmount ?? 1), 0);
+      const manualPlanned = nonSkipped.reduce((s, a) => s + (a.targetAmount ?? 1), 0);
+      const manualCompleted = nonSkipped.filter((a) => a.completed).reduce((s, a) => s + (a.targetAmount ?? 1), 0);
 
       const weekStart = startOfWeek(selectedDate, weekStartsOn);
       let autoPlanned = 0;
@@ -292,7 +354,7 @@ function GoalColumn({
         }
       }
 
-      const manualDates = new Set(assigned.map((a) => a.date));
+      const manualDates = new Set(nonSkipped.map((a) => a.date));
       const weekStartIso = toIsoDate(startOfWeek(selectedDate, weekStartsOn));
       const weekEndIso = toIsoDate(endOfWeek(selectedDate, weekStartsOn));
       const autoCompletedCount = (goal.completedDates ?? []).filter((d) => {
@@ -335,12 +397,14 @@ function GoalColumn({
   const colGoals = goals
     .filter((g) => g.cadence === cadence)
     .filter((g) => !g.startDate || g.startDate <= periodEnd)
+    .filter((g) => !g.endDate || g.endDate >= toIsoDate(selectedDate))
     .filter((g) => {
       if (filter === "all") return true;
       const counts = getGoalCounts(g);
       const resolvedTarget = counts.overrideTarget ?? (g.target ?? (g.type === "binary" ? 1 : 0));
       // Daily goals are always "allocated" by schedule — skip hide-allocated for them
       if (filter === "hide-allocated" && g.cadence === "daily") return true;
+      if (filter === "hide-done" && counts.dailyBacklogCount && counts.dailyBacklogCount > 0) return true;
       if (filter === "hide-done" && resolvedTarget > 0 && counts.completed >= resolvedTarget) return false;
       if (filter === "hide-allocated" && resolvedTarget > 0 && counts.planned >= resolvedTarget) return false;
       return true;
@@ -390,10 +454,14 @@ function GoalColumn({
                 completedCount={counts.completed}
                 missedCount={counts.missed}
                 periodLabel={getPeriodLabel(goal)}
-                draggable={goal.cadence !== "daily"}
+                draggable
                 overrideTarget={counts.overrideTarget}
                 overrideUnit={counts.overrideUnit}
                 parentTitle={parentTitle}
+                onRenameGoal={onRenameGoal}
+                programLabel={getGoalProgramLabel(goal, selectedDate)}
+                dailyBacklogCount={counts.dailyBacklogCount}
+                onResolveBacklogDate={(isoDate) => onToggleDate(goal.id, isoDate)}
               />
             );
           })}
@@ -417,22 +485,38 @@ function GoalColumn({
 }
 
 
-export function GoalTray({ goals, dayAssignments, selectedDate, view, weekStartsOn = 0, filter = "all" }: GoalTrayProps) {
+export function GoalTray({ goals, dayAssignments, selectedDate, view, weekStartsOn = 0, filter = "all", onRenameGoal, onToggleDate }: GoalTrayProps) {
+  const selectedIso = toIsoDate(selectedDate);
 
-  const libraryGoals = goals.filter(
+  const allLibraryGoals = goals.filter(
     (g) => !g.adhoc && g.status !== "paused" && g.status !== "done",
   );
+  const libraryGoals = allLibraryGoals.filter((g) => {
+    // Calendar-only rule for seasonal goals:
+    // show only when the selected date is inside the active window.
+    if (!g.endDate) return true;
+    if (g.startDate && selectedIso < g.startDate) return false;
+    if (selectedIso > g.endDate) return false;
+    return true;
+  });
 
   if (libraryGoals.length === 0) {
+    if (allLibraryGoals.length === 0) {
+      return (
+        <div className="rounded-xl border border-dashed border-line/60 bg-surface-muted/50 px-4 py-3">
+          <p className="text-[12px] text-text-muted">
+            No goals yet.{" "}
+            <a href="/goals" className="font-semibold text-brand underline-offset-2 hover:underline">
+              Add goals
+            </a>{" "}
+            to plan your week.
+          </p>
+        </div>
+      );
+    }
     return (
-      <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/60 px-4 py-3">
-        <p className="text-[12px] text-slate-400">
-          No goals yet.{" "}
-          <a href="/goals" className="text-brand/70 underline-offset-2 hover:underline">
-            Add goals
-          </a>{" "}
-          to plan your week.
-        </p>
+      <div className="rounded-xl border border-dashed border-line/60 bg-surface-muted/50 px-4 py-3">
+        <p className="text-[12px] text-text-muted">No active goals for this date.</p>
       </div>
     );
   }
@@ -458,6 +542,8 @@ export function GoalTray({ goals, dayAssignments, selectedDate, view, weekStarts
             filter={filter}
             view={view}
             weekStartsOn={weekStartsOn}
+            onRenameGoal={onRenameGoal}
+            onToggleDate={onToggleDate}
           />
         ))}
       </div>

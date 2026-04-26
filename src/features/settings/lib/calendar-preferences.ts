@@ -1,21 +1,21 @@
 import type { CalendarPreferences, HavdalahOpinion } from "@/features/settings/types/calendar-preferences";
+import { buildScopedStorageKey, purgeLegacyPlannerStorage } from "../../../lib/user-scoped-browser-storage";
 
 export const CALENDAR_PREFERENCES_STORAGE_KEY = "planner.calendar-preferences.v1";
 
 export const defaultCalendarPreferences: CalendarPreferences = {
   locationKey: "new-york",
-  timeFormat: "24h",
-  showHebrewDates: false,
+  timeFormat: "12h",
+  showHebrewDates: true,
   havdalahOpinion: "tzeit-8_5",
   showParsha: true,
   showOutsideMonthDays: true,
-  showModernHolidays: true,
+  showModernHolidays: false,
   weekStartsOn: 0,
-  defaultView: "month",
+  defaultView: "week",
   showRoshChodesh: true,
-  showOmer: true,
   timelineSnapMins: 15,
-  timelineDefaultDurationMins: 60,
+  timelineDefaultDurationMins: 30,
 };
 
 export function getHavdalahOptions(opinion: HavdalahOpinion) {
@@ -29,5 +29,46 @@ export function getHavdalahOptions(opinion: HavdalahOpinion) {
     case "tzeit-8_5":
     default:
       return { havdalahDeg: 8.5 };
+  }
+}
+
+export function getScopedCalendarPreferencesStorageKey(storageScope: string): string {
+  return buildScopedStorageKey(CALENDAR_PREFERENCES_STORAGE_KEY, storageScope);
+}
+
+export function loadCalendarPreferencesFromStorage(storageScope: string): Partial<CalendarPreferences> | null {
+  if (typeof window === "undefined") return null;
+  try {
+    purgeLegacyPlannerStorage();
+    const raw = window.localStorage.getItem(getScopedCalendarPreferencesStorageKey(storageScope));
+    if (!raw) return null;
+    return JSON.parse(raw) as Partial<CalendarPreferences>;
+  } catch {
+    return null;
+  }
+}
+
+export function saveCalendarPreferencesToStorage(
+  storageScope: string,
+  preferences: Partial<CalendarPreferences>,
+): void {
+  if (typeof window === "undefined") return;
+  try {
+    purgeLegacyPlannerStorage();
+    window.localStorage.setItem(
+      getScopedCalendarPreferencesStorageKey(storageScope),
+      JSON.stringify(preferences),
+    );
+  } catch {
+    // Ignore localStorage failures.
+  }
+}
+
+export function clearCalendarPreferencesStorage(storageScope: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(getScopedCalendarPreferencesStorageKey(storageScope));
+  } catch {
+    // Ignore localStorage failures.
   }
 }

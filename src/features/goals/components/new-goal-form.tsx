@@ -4,10 +4,12 @@ import { useState } from "react";
 import { X } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
+import { Modal } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
 import { DayPicker } from "@/features/goals/components/day-picker";
 import { HolidayChipSelect } from "@/features/goals/components/holiday-chip-select";
 import { HolidayCustomDrawer } from "@/features/goals/components/holiday-custom-drawer";
+import { ZMANIM_NOTCHES, ZmanimArcPicker } from "@/features/onboarding/components/zmanim-arc-picker";
 import type { HolidayExcludes } from "@/features/goals/components/holiday-chip-select";
 import type { Goal, GoalCadence, GoalType, IfUnfinished } from "@/features/goals/types/goal";
 import { todayIso } from "@/lib/date";
@@ -30,6 +32,47 @@ const ZMANIM_PERIODS = [
   "Night",
 ] as const;
 const DEFAULT_EXCLUDES: HolidayExcludes = { categories: [], individual: [] };
+const ZMANIM_LABELS = new Map(ZMANIM_NOTCHES.map((notch) => [notch.key, notch.label]));
+const TIME_WINDOW_PRESETS = [
+  { key: "any", label: "Any time", startsAt: "", expiresAt: "" },
+  { key: "daylight", label: "Daylight", startsAt: "Netz HaChama", expiresAt: "Shkiyah" },
+  { key: "morning", label: "Morning", startsAt: "Alot HaShachar", expiresAt: "Chatzot" },
+  { key: "afternoon", label: "Afternoon", startsAt: "Chatzot", expiresAt: "Shkiyah" },
+  { key: "after-sunset", label: "After sunset", startsAt: "Tzais HaKochavim", expiresAt: "Alot HaShachar" },
+] as const;
+
+function prettyZmanLabel(value: string) {
+  return ZMANIM_LABELS.get(value) ?? value;
+}
+
+function describeTimeWindow(startsAt: string, expiresAt: string) {
+  if (!startsAt && !expiresAt) {
+    return {
+      title: "Any time",
+      detail: "No zmanim limit. This goal can be completed anytime during the day.",
+    };
+  }
+  if (startsAt && expiresAt) {
+    return {
+      title: `${prettyZmanLabel(startsAt)} → ${prettyZmanLabel(expiresAt)}`,
+      detail: "Uses your calendar settings and shifts with the day’s zmanim.",
+    };
+  }
+  if (startsAt) {
+    return {
+      title: `${prettyZmanLabel(startsAt)} onward`,
+      detail: "This goal becomes active after that zman each day.",
+    };
+  }
+  return {
+    title: `Until ${prettyZmanLabel(expiresAt)}`,
+    detail: "This goal stays active until that zman each day.",
+  };
+}
+
+function getMatchingTimePresetKey(startsAt: string, expiresAt: string) {
+  return TIME_WINDOW_PRESETS.find((preset) => preset.startsAt === startsAt && preset.expiresAt === expiresAt)?.key ?? "custom";
+}
 
 function buildSummary(fields: {
   title: string;
@@ -95,11 +138,21 @@ interface NewGoalFormProps {
   existingGoal?: Goal;
   onSave: (goal: Goal) => void;
   onClose: () => void;
+  /** When true (Seasonal tab), show a cadence picker so the user can choose any cadence. */
+  allowCadenceChange?: boolean;
 }
 
-export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose }: NewGoalFormProps) {
-  const cadence = defaultCadence; // locked — not editable
+const CADENCE_OPTIONS: { value: GoalCadence; label: string }[] = [
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+  { value: "monthly", label: "Monthly" },
+  { value: "yearly", label: "Yearly" },
+  { value: "one-time", label: "One-time" },
+];
+
+export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose, allowCadenceChange }: NewGoalFormProps) {
   const isEditing = !!existingGoal;
+  const [cadence, setCadence] = useState<GoalCadence>(existingGoal?.cadence ?? defaultCadence);
 
   const [title, setTitle] = useState(existingGoal?.title ?? "");
   const [goalType, setGoalType] = useState<GoalType>(existingGoal?.type ?? "binary");
@@ -126,6 +179,7 @@ export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose }: N
   const [noGettingAhead, setNoGettingAhead] = useState(existingGoal?.noGettingAhead ?? false);
   const [startsAt, setStartsAt] = useState(existingGoal?.startsAt ?? "");
   const [expiresAt, setExpiresAt] = useState(existingGoal?.expiresAt ?? "");
+  const [timeWindowModalOpen, setTimeWindowModalOpen] = useState(false);
   const [lockInDays, setLockInDays] = useState(existingGoal?.lockInDays ?? false);
 
   // Monthly scheduling state
@@ -145,6 +199,8 @@ export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose }: N
   const isDaily = cadence === "daily";
   const isNumeric = goalType === "quantified";
   const showIfUnfinished = cadence !== "one-time" && cadence !== "yearly";
+  const activeTimePreset = getMatchingTimePresetKey(startsAt, expiresAt);
+  const timeWindowSummary = describeTimeWindow(startsAt, expiresAt);
 
   const summary = buildSummary({ title, cadence, type: goalType, target, targetUnit, activeDays, holidayExcludes, endType, endDate, endCount, startDate, monthDayType, specificMonthDay });
 
@@ -184,6 +240,7 @@ export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose }: N
         : undefined,
       startsAt: isDaily && startsAt ? startsAt : undefined,
       expiresAt: isDaily && expiresAt ? expiresAt : undefined,
+      programKey: existingGoal?.programKey,
       lockInDays: (isDaily || (cadence === "weekly" && activeDays.length > 0)) ? lockInDays || undefined : undefined,
       ifUnfinished: showIfUnfinished ? ifUnfinished : undefined,
       startDate,
@@ -208,6 +265,34 @@ export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose }: N
           className={inputClass}
         />
       </div>
+
+      {/* Cadence picker — only shown when allowCadenceChange is true */}
+      {allowCadenceChange && !isEditing ? (
+        <div className="space-y-1.5">
+          <label className={labelClass}>Repeats</label>
+          <div className="flex flex-wrap gap-2">
+            {CADENCE_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => {
+                  setCadence(opt.value);
+                  if (opt.value !== "daily" && opt.value !== "weekly") setActiveDays([]);
+                  if (opt.value === "daily") setActiveDays(DEFAULT_ACTIVE_DAYS);
+                }}
+                className={cn(
+                  "rounded-full border px-4 py-1.5 text-sm font-semibold transition",
+                  cadence === opt.value
+                    ? "border-brand/50 bg-brand-soft text-brand"
+                    : "border-line bg-white text-text-muted hover:border-brand/30 hover:text-text",
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {/* Track as */}
       <div className="space-y-1.5">
@@ -259,13 +344,15 @@ export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose }: N
           <div className="space-y-2">
             <button
               type="button"
+              role="switch"
+              aria-checked={lockInDays}
               onClick={() => setLockInDays((v) => !v)}
               className="flex w-full items-center justify-between rounded-xl border border-line bg-white px-3 py-2.5 transition hover:border-brand/30"
             >
               <div className="text-left">
                 <p className="text-sm font-semibold text-text">Lock in days</p>
                 <p className="mt-0.5 text-xs text-text-subtle">
-                  {lockInDays ? "Fixed — can't be moved to another day" : "Flexible — can be dragged to another day"}
+                  {lockInDays ? "Set in stone — can't be moved to another day or removed from it" : "Flexible — can be dragged to another day or removed from it"}
                 </p>
               </div>
               <div className={`ml-3 flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-200 ${lockInDays ? "bg-brand" : "bg-line"}`}>
@@ -280,19 +367,57 @@ export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose }: N
               Time window{" "}
               <span className="font-normal normal-case tracking-normal text-text-subtle">(optional)</span>
             </label>
-            <div className="grid grid-cols-2 gap-2">
-              <Select value={startsAt} onChange={(e) => setStartsAt(e.target.value)}>
-                <option value="">Starts: any time</option>
-                {ZMANIM_PERIODS.map((p) => <option key={p} value={p}>{p}</option>)}
-              </Select>
-              <Select value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)}>
-                <option value="">Expires: never</option>
-                {ZMANIM_PERIODS.map((p) => <option key={p} value={p}>{p}</option>)}
-              </Select>
+            <div className="space-y-3 rounded-2xl border border-line bg-white p-3 shadow-soft">
+              <button
+                type="button"
+                onClick={() => setTimeWindowModalOpen(true)}
+                className="flex w-full items-start justify-between gap-3 rounded-xl px-1 py-0.5 text-left transition hover:bg-surface-muted/60"
+              >
+                <div>
+                  <p className="text-sm font-semibold text-text">{timeWindowSummary.title}</p>
+                  <p className="mt-0.5 text-xs leading-relaxed text-text-subtle">{timeWindowSummary.detail}</p>
+                </div>
+                <span className="shrink-0 rounded-full border border-line/80 px-2.5 py-1 text-[11px] font-semibold text-text-muted">
+                  Custom
+                </span>
+              </button>
+
+              <div className="flex flex-wrap gap-2">
+                {TIME_WINDOW_PRESETS.map((preset) => {
+                  const active = activeTimePreset === preset.key;
+                  return (
+                    <button
+                      key={preset.key}
+                      type="button"
+                      onClick={() => {
+                        setStartsAt(preset.startsAt);
+                        setExpiresAt(preset.expiresAt);
+                      }}
+                      className={cn(
+                        "rounded-full border px-3 py-1.5 text-xs font-semibold transition",
+                        active
+                          ? "border-brand/50 bg-brand-soft text-brand"
+                          : "border-line/80 bg-surface text-text-muted hover:border-brand/30 hover:text-text",
+                      )}
+                    >
+                      {preset.label}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => setTimeWindowModalOpen(true)}
+                  className={cn(
+                    "rounded-full border px-3 py-1.5 text-xs font-semibold transition",
+                    activeTimePreset === "custom"
+                      ? "border-brand/50 bg-brand-soft text-brand"
+                      : "border-line/80 bg-surface text-text-muted hover:border-brand/30 hover:text-text",
+                  )}
+                >
+                  Custom…
+                </button>
+              </div>
             </div>
-            {(startsAt || expiresAt) && (
-              <p className="text-[11px] text-text-subtle">Goal dims outside this window — tap still works.</p>
-            )}
           </div>
 
           {/* 4. Exceptions */}
@@ -324,7 +449,7 @@ export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose }: N
               <div className="text-left">
                 <p className="text-sm font-semibold text-text">Lock in days</p>
                 <p className="mt-0.5 text-xs text-text-subtle">
-                  {lockInDays ? "Fixed — can't be moved to another day" : "Flexible — can be dragged to another day"}
+                  {lockInDays ? "Set in stone — can't be moved to another day or removed from it" : "Flexible — can be dragged to another day or removed from it"}
                 </p>
               </div>
               <div className={`ml-3 flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-200 ${lockInDays ? "bg-brand" : "bg-line"}`}>
@@ -489,12 +614,70 @@ export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose }: N
         </div>
       ) : null}
 
+      <Modal
+        open={timeWindowModalOpen}
+        onClose={() => setTimeWindowModalOpen(false)}
+        title="Custom time window"
+        description="Choose when this goal should be active based on zmanim. These times follow your calendar settings and shift through the year."
+        panelClassName="max-w-[720px] rounded-[28px] p-5 md:p-6"
+      >
+        <div className="space-y-4">
+          <ZmanimArcPicker
+            startKey={startsAt || null}
+            endKey={expiresAt || null}
+            onChange={(nextStart, nextEnd) => {
+              setStartsAt(nextStart ?? "");
+              setExpiresAt(nextEnd ?? "");
+            }}
+          />
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <label className={labelClass}>Starts</label>
+              <Select value={startsAt} onChange={(e) => setStartsAt(e.target.value)}>
+                <option value="">Any time</option>
+                {ZMANIM_PERIODS.map((period) => <option key={period} value={period}>{period}</option>)}
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <label className={labelClass}>Ends</label>
+              <Select value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)}>
+                <option value="">No end</option>
+                {ZMANIM_PERIODS.map((period) => <option key={period} value={period}>{period}</option>)}
+              </Select>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setStartsAt("");
+                setExpiresAt("");
+              }}
+              className="text-sm font-medium text-text-subtle underline underline-offset-4 transition hover:text-text"
+            >
+              Clear window
+            </button>
+            <Button type="button" onClick={() => setTimeWindowModalOpen(false)}>
+              Done
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
       {/* Live summary */}
       <div className="rounded-2xl border border-brand/20 bg-brand-soft/40 px-4 py-3">
         <p className="text-sm font-medium leading-relaxed text-text">{summary}</p>
       </div>
 
-      <Button variant="primary" className="w-full" onClick={handleSave}>
+      <Button
+        variant="primary"
+        className="w-full"
+        onClick={handleSave}
+        disabled={!title.trim()}
+        title={!title.trim() ? "Enter a goal title to save" : undefined}
+      >
         {isEditing ? "Update Goal" : "Save Goal"}
       </Button>
     </div>

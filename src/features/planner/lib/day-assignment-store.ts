@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { clearScopedJson, loadScopedJsonArray, saveScopedJson } from "../../../lib/scoped-storage-store";
+
+export const DAY_ASSIGNMENTS_STORAGE_UPDATED_EVENT = "day-assignments-storage-updated";
 
 export interface DayAssignment {
   id: string;
@@ -25,13 +28,54 @@ export interface DayAssignment {
   scheduledTime?: string;
   /** Duration in minutes for the daily timeline */
   durationMins?: number;
-  /** "HH:MM" — when the user actually checked it off */
+  /** "HH:MM" — completion marker; mirrors scheduledTime when the item lives on the calendar */
   completedAt?: string;
+  /** Shared by split quantified session fragments that originated from one planned session */
+  sessionGroupId?: string;
+  /** True when this occurrence was materialized from a recurring goal rule for the current planner period */
+  generated?: boolean;
+  /**
+   * When true, this is a "skip record" — no rendered goal item.
+   * Created when deleting an assignment that had replacedAutoDate, to keep
+   * the preferred day suppressed.
+   */
+  skipped?: boolean;
+}
+
+export interface DayAssignmentsStorageUpdatedDetail {
+  storageScope: string;
+  assignments: DayAssignment[];
+}
+
+function dispatchDayAssignmentsStorageUpdated(storageScope: string, assignments: DayAssignment[]) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent<DayAssignmentsStorageUpdatedDetail>(DAY_ASSIGNMENTS_STORAGE_UPDATED_EVENT, {
+    detail: { storageScope, assignments },
+  }));
+}
+
+type PersistableAssignmentLike = Pick<
+  Partial<DayAssignment>,
+  "generated" | "replacedAutoDate" | "scheduledTime" | "durationMins" | "sessionGroupId" | "skipped"
+>;
+
+export function isEphemeralGeneratedAssignment(assignment: PersistableAssignmentLike): boolean {
+  return (
+    assignment.generated === true &&
+    assignment.replacedAutoDate === undefined &&
+    assignment.scheduledTime === undefined &&
+    assignment.durationMins === undefined &&
+    assignment.sessionGroupId === undefined &&
+    assignment.skipped !== true
+  );
+}
+
+export function getPersistableDayAssignments(assignments: DayAssignment[]): DayAssignment[] {
+  return assignments.filter((assignment) => !isEphemeralGeneratedAssignment(assignment));
 }
 
 // ─── Storage key versioning ──────────────────────────────────────────────────
 const KEY_V1 = "steinberg_day_assignments.v1";
-const KEY_LEGACY = "steinberg_day_assignments"; // pre-versioning key, migrated on first load
 
 // ─── Zod schema ──────────────────────────────────────────────────────────────
 const DayAssignmentSchema = z.object({
@@ -45,6 +89,9 @@ const DayAssignmentSchema = z.object({
   scheduledTime: z.string().optional(),
   durationMins: z.number().optional(),
   completedAt: z.string().optional(),
+  sessionGroupId: z.string().optional(),
+  generated: z.boolean().optional(),
+  skipped: z.boolean().optional(),
 });
 
 const DayAssignmentsArraySchema = z.array(DayAssignmentSchema);
@@ -56,42 +103,25 @@ function generateId(): string {
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-export function loadDayAssignments(): DayAssignment[] {
-  if (typeof window === "undefined") return [];
-  try {
-    // Prefer v1 key; migrate from legacy key if not yet upgraded
-    let raw = localStorage.getItem(KEY_V1);
-    if (raw === null) {
-      const legacy = localStorage.getItem(KEY_LEGACY);
-      if (legacy !== null) {
-        localStorage.setItem(KEY_V1, legacy);
-        localStorage.removeItem(KEY_LEGACY);
-        raw = legacy;
-      }
-    }
-    if (!raw) return [];
+export function loadDayAssignments(storageScope: string): DayAssignment[] {
+  return loadScopedJsonArray({
+    baseKey: KEY_V1,
+    storageScope,
+    arraySchema: DayAssignmentsArraySchema,
+    itemSchema: DayAssignmentSchema,
+  }) as DayAssignment[];
+}
 
-    const parsed = DayAssignmentsArraySchema.safeParse(JSON.parse(raw));
-    if (!parsed.success) {
-      // Partial recovery: keep items that individually pass validation
-      const items: unknown[] = JSON.parse(raw);
-      return items
-        .map((item) => DayAssignmentSchema.safeParse(item))
-        .filter((r) => r.success)
-        .map((r) => r.data as DayAssignment);
-    }
-    return parsed.data as DayAssignment[];
-  } catch {
-    return [];
+export function saveDayAssignments(storageScope: string, assignments: DayAssignment[]): void {
+  const persistableAssignments = getPersistableDayAssignments(assignments);
+  if (saveScopedJson({ baseKey: KEY_V1, storageScope, value: persistableAssignments })) {
+    dispatchDayAssignmentsStorageUpdated(storageScope, persistableAssignments);
   }
 }
 
-export function saveDayAssignments(assignments: DayAssignment[]): void {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(KEY_V1, JSON.stringify(assignments));
-  } catch {
-    // localStorage unavailable or quota exceeded
+export function clearDayAssignmentsStorage(storageScope: string): void {
+  if (clearScopedJson({ baseKey: KEY_V1, storageScope })) {
+    dispatchDayAssignmentsStorageUpdated(storageScope, []);
   }
 }
 
@@ -103,6 +133,24 @@ export function createAssignment(
   replacedAutoDate?: string,
   scheduledTime?: string,
   durationMins?: number,
+  sessionGroupId?: string,
+  generated?: boolean,
 ): DayAssignment {
-  return { id: generateId(), goalId, date, completed: false, targetAmount, periodKey, replacedAutoDate, scheduledTime, durationMins };
+  return {
+    id: generateId(),
+    goalId,
+    date,
+    completed: false,
+    targetAmount,
+    periodKey,
+    replacedAutoDate,
+    scheduledTime,
+    durationMins,
+    sessionGroupId,
+    generated,
+  };
+}
+
+export function createDayAssignmentId(): string {
+  return generateId();
 }

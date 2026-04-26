@@ -2,6 +2,7 @@ export type GoalCadence = "one-time" | "yearly" | "monthly" | "weekly" | "daily"
 export type GoalStatus = "ongoing" | "done" | "paused";
 export type GoalType = "binary" | "quantified";
 export type IfUnfinished = "forgive" | "backlog" | "track-failure" | "kill-streak";
+export type GoalProgramKey = "daf-yomi" | "omer";
 
 /** A named checkpoint on a one-time (project) goal. Cosmetic only — does not affect progress. */
 export interface Milestone {
@@ -57,6 +58,12 @@ export interface Goal {
   startsAt?: string;
   expiresAt?: string;
 
+  /**
+   * Optional external learning/program schedule used to derive date-specific labels.
+   * Example: a Daf Yomi goal keeps a stable title while each date can show its own daf.
+   */
+  programKey?: GoalProgramKey;
+
   /** What happens when a recurring goal period ends with progress remaining */
   ifUnfinished?: IfUnfinished;
 
@@ -88,9 +95,10 @@ export interface Goal {
   preferredMonthDay?: "first" | "last" | number;
 
   /**
-   * When true, this goal's occurrences cannot be dragged to a different day.
+   * When true, this goal's occurrences are fixed to their assigned day.
+   * They cannot be dragged to a different day or removed from that day.
    * The user sets this explicitly in the goal form.
-   * false/undefined (default) = draggable; true = fixed to its scheduled day(s).
+   * false/undefined (default) = flexible; true = fixed to its scheduled day(s).
    */
   lockInDays?: boolean;
 

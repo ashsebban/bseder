@@ -1,38 +1,62 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { defaultCalendarPreferences, CALENDAR_PREFERENCES_STORAGE_KEY } from "@/features/settings/lib/calendar-preferences";
+import {
+  defaultCalendarPreferences,
+  loadCalendarPreferencesFromStorage,
+  saveCalendarPreferencesToStorage,
+} from "@/features/settings/lib/calendar-preferences";
+import { normalizeCalendarPreferences } from "@/features/settings/lib/calendar-preference-utils";
 import type { CalendarPreferences } from "@/features/settings/types/calendar-preferences";
 
 function isBrowser() {
   return typeof window !== "undefined";
 }
 
-export function useCalendarPreferences() {
-  const [preferences, setPreferences] = useState<CalendarPreferences>(defaultCalendarPreferences);
+export function useCalendarPreferences(
+  initialPreferences?: Partial<CalendarPreferences>,
+  storageScope?: string,
+) {
+  const [preferences, setPreferencesState] = useState<CalendarPreferences>(
+    normalizeCalendarPreferences(initialPreferences ?? defaultCalendarPreferences),
+  );
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     if (!isBrowser()) return;
+    if (!storageScope) {
+      setPreferencesState(normalizeCalendarPreferences(initialPreferences ?? defaultCalendarPreferences));
+      setHydrated(false);
+      return;
+    }
+
     try {
-      const raw = window.localStorage.getItem(CALENDAR_PREFERENCES_STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as Partial<CalendarPreferences>;
-        // Fall back to default locationKey if saved value is empty (pre-default era)
-        if (!parsed.locationKey) parsed.locationKey = defaultCalendarPreferences.locationKey;
-        setPreferences({ ...defaultCalendarPreferences, ...parsed });
+      const parsed = loadCalendarPreferencesFromStorage(storageScope);
+      if (parsed) {
+        setPreferencesState(normalizeCalendarPreferences({
+          ...(initialPreferences ?? {}),
+          ...parsed,
+        }));
+      } else if (initialPreferences) {
+        setPreferencesState(normalizeCalendarPreferences(initialPreferences));
       }
     } catch {
       // Ignore malformed saved preferences and fall back to defaults.
     } finally {
       setHydrated(true);
     }
-  }, []);
+  }, [initialPreferences, storageScope]);
 
   useEffect(() => {
-    if (!isBrowser() || !hydrated) return;
-    window.localStorage.setItem(CALENDAR_PREFERENCES_STORAGE_KEY, JSON.stringify(preferences));
-  }, [hydrated, preferences]);
+    if (!isBrowser() || !hydrated || !storageScope) return;
+    saveCalendarPreferencesToStorage(storageScope, preferences);
+  }, [hydrated, preferences, storageScope]);
+
+  const setPreferences = (next: CalendarPreferences | ((current: CalendarPreferences) => CalendarPreferences)) => {
+    setPreferencesState((current) => normalizeCalendarPreferences(
+      typeof next === "function" ? next(current) : next,
+    ));
+  };
 
   const updatePreference = <K extends keyof CalendarPreferences>(key: K, value: CalendarPreferences[K]) => {
     setPreferences((current) => ({ ...current, [key]: value }));
@@ -41,6 +65,7 @@ export function useCalendarPreferences() {
   return {
     preferences,
     hydrated,
+    setPreferences,
     updatePreference,
     resetPreferences: () => setPreferences(defaultCalendarPreferences),
   };

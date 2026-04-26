@@ -1,5 +1,5 @@
-import { startOfWeek, toIsoDate } from "@/lib/date";
-import type { GoalCadence } from "@/features/goals/types/goal";
+import { startOfWeek, toIsoDate } from "../../../lib/date";
+import type { GoalCadence } from "../../goals/types/goal";
 
 /**
  * Canonical function for computing a period key string from a cadence and date.

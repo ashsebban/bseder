@@ -3,7 +3,6 @@
 import { useEffect } from "react";
 import { X } from "lucide-react";
 import { cn } from "@/lib/cn";
-import { Button } from "@/components/ui/button";
 import type { ReactNode } from "react";
 
 interface ModalProps {
@@ -12,9 +11,12 @@ interface ModalProps {
   title: string;
   description?: string;
   children: ReactNode;
+  footer?: ReactNode;
+  panelClassName?: string;
+  bodyClassName?: string;
 }
 
-export function Modal({ open, onClose, title, description, children }: ModalProps) {
+export function Modal({ open, onClose, title, description, children, footer, panelClassName, bodyClassName }: ModalProps) {
   useEffect(() => {
     if (!open) return;
     function onKey(e: KeyboardEvent) {
@@ -41,9 +43,15 @@ export function Modal({ open, onClose, title, description, children }: ModalProp
         aria-modal="true"
         className="fixed inset-0 z-[70] flex items-center justify-center p-4"
       >
-        <div className="w-full max-w-sm rounded-3xl bg-surface p-6 shadow-panel">
+        <div
+          className={cn(
+            "flex w-full max-w-sm flex-col overflow-hidden rounded-3xl bg-surface shadow-panel",
+            "max-h-[90vh]",
+            panelClassName,
+          )}
+        >
           {/* Header */}
-          <div className="mb-4 flex items-start justify-between gap-3">
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-line/50 px-6 pt-5 pb-4">
             <div>
               <h2 className="text-lg font-bold tracking-tight text-text">{title}</h2>
               {description ? (
@@ -53,14 +61,24 @@ export function Modal({ open, onClose, title, description, children }: ModalProp
             <button
               type="button"
               onClick={onClose}
-              className="shrink-0 rounded-xl p-1.5 text-text-muted transition hover:bg-surface-muted hover:text-text"
+              className="mt-0.5 shrink-0 rounded-xl p-1.5 text-text-muted transition hover:bg-surface-muted hover:text-text"
               aria-label="Close"
             >
-              <X className="h-4 w-4" />
+              <X className="h-5 w-5" />
             </button>
           </div>
 
-          {children}
+          {/* Body */}
+          <div className={cn("min-h-0 flex-1", bodyClassName ?? "overflow-y-auto px-6 py-5")}>
+            {children}
+          </div>
+
+          {/* Footer */}
+          {footer ? (
+            <div className="shrink-0 border-t border-line/50 px-6 py-4">
+              {footer}
+            </div>
+          ) : null}
         </div>
       </div>
     </>
@@ -115,14 +133,14 @@ export function KillStreakModal({
               action.variant === "primary"
                 ? "border-brand/40 bg-brand-soft/60 hover:bg-brand-soft"
                 : action.variant === "destructive"
-                  ? "border-red-200 bg-red-50 hover:bg-red-100"
+                  ? "border-destructive-line bg-destructive-soft hover:bg-destructive-soft/80"
                   : "border-line bg-surface hover:bg-surface-muted",
             )}
           >
             <span className={cn(
               "text-sm font-semibold",
               action.variant === "primary" ? "text-brand" :
-              action.variant === "destructive" ? "text-red-600" : "text-text",
+              action.variant === "destructive" ? "text-destructive" : "text-text",
             )}>
               {action.label}
             </span>

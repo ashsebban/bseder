@@ -45,6 +45,7 @@ export function useCalendarRouterState() {
     isPending,
     setView: (view: CalendarView) => setQuery({ view }),
     setSelectedDate: (date: Date) => setQuery({ dateIso: toIsoDate(date) }),
+    setDateAndView: (date: Date, view: CalendarView) => setQuery({ dateIso: toIsoDate(date), view }),
     jumpToToday: () => setQuery({ dateIso: todayIso() }),
     goToPrevious: () => setQuery({ dateIso: toIsoDate(shiftDateForView(selectedDate, state.view, -1)) }),
     goToNext: () => setQuery({ dateIso: toIsoDate(shiftDateForView(selectedDate, state.view, 1)) }),

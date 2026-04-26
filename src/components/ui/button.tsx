@@ -1,7 +1,7 @@
 import * as React from "react";
 import { cn } from "@/lib/cn";
 
-type ButtonVariant = "primary" | "secondary" | "ghost";
+type ButtonVariant = "primary" | "secondary" | "ghost" | "destructive";
 type ButtonSize = "md" | "sm";
 
 const variantClasses: Record<ButtonVariant, string> = {
@@ -11,6 +11,8 @@ const variantClasses: Record<ButtonVariant, string> = {
     "bg-surface text-text border border-line hover:border-brand/30 hover:bg-brand-soft/60 focus-visible:ring-brand/20",
   ghost:
     "bg-transparent text-text-muted hover:bg-brand-soft/50 hover:text-text focus-visible:ring-brand/20",
+  destructive:
+    "border border-destructive-line bg-destructive-soft text-destructive hover:bg-destructive-soft/80 hover:text-destructive-strong focus-visible:ring-destructive/25",
 };
 
 const sizeClasses: Record<ButtonSize, string> = {

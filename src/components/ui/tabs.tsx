@@ -11,6 +11,7 @@ interface TabsProps<T extends string> {
   onValueChange: (value: T) => void;
   options: TabOption<T>[];
   className?: string;
+  size?: "md" | "sm";
 }
 
 export function SegmentedTabs<T extends string>({
@@ -18,6 +19,7 @@ export function SegmentedTabs<T extends string>({
   onValueChange,
   options,
   className,
+  size = "md",
 }: TabsProps<T>) {
   return (
     <div className={cn("inline-flex rounded-full border border-line bg-surface-muted p-1", className)}>
@@ -29,7 +31,8 @@ export function SegmentedTabs<T extends string>({
             type="button"
             onClick={() => onValueChange(option.value)}
             className={cn(
-              "rounded-full px-5 py-3 text-base font-semibold transition",
+              "rounded-full font-semibold transition",
+              size === "sm" ? "px-4 py-2 text-[13px] md:text-[14px]" : "px-5 py-3 text-base",
               active
                 ? "bg-white text-text shadow-soft"
                 : "text-text-muted hover:text-text",

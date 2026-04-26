@@ -1,24 +1,42 @@
-const KEY = "steinberg_goal_order.v1";
+import { z } from "zod";
+import { clearScopedJson, loadScopedJsonArray, saveScopedJson } from "../../../lib/scoped-storage-store";
 
-export function loadGoalOrder(): string[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed)
-      ? parsed.filter((x): x is string => typeof x === "string")
-      : [];
-  } catch {
-    return [];
+const KEY = "steinberg_goal_order.v1";
+const GoalOrderSchema = z.array(z.string());
+const GoalOrderItemSchema = z.string();
+export const GOAL_ORDER_STORAGE_UPDATED_EVENT = "goal-order-storage-updated";
+
+export interface GoalOrderStorageUpdatedDetail {
+  storageScope: string;
+  order: string[];
+}
+
+function dispatchGoalOrderStorageUpdated(storageScope: string, order: string[]) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent<GoalOrderStorageUpdatedDetail>(GOAL_ORDER_STORAGE_UPDATED_EVENT, {
+    detail: { storageScope, order },
+  }));
+}
+
+export function loadGoalOrder(storageScope: string): string[] {
+  return loadScopedJsonArray({
+    baseKey: KEY,
+    storageScope,
+    arraySchema: GoalOrderSchema,
+    itemSchema: GoalOrderItemSchema,
+  });
+}
+
+export function saveGoalOrder(storageScope: string, order: string[]): void {
+  if (saveScopedJson({ baseKey: KEY, storageScope, value: order })) {
+    dispatchGoalOrderStorageUpdated(storageScope, order);
   }
 }
 
-export function saveGoalOrder(order: string[]): void {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(KEY, JSON.stringify(order));
-  } catch {}
+export function clearGoalOrderStorage(storageScope: string): void {
+  if (clearScopedJson({ baseKey: KEY, storageScope })) {
+    dispatchGoalOrderStorageUpdated(storageScope, []);
+  }
 }
 
 /**

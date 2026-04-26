@@ -11,9 +11,12 @@ node_modules/
 
 # testing
 /coverage
+/.test-dist
 
 # next.js
 /.next/
+/.next-dev/
+/.next-prod/
 /out/
 
 # production
@@ -38,3 +41,5 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+/generated/prisma

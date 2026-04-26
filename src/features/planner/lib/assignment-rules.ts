@@ -1,7 +1,41 @@
-import { startOfWeek, toIsoDate } from "@/lib/date";
-import { DAY_KEYS } from "@/features/goals/lib/goal-progress";
+import { endOfMonth, endOfWeek, startOfMonth, startOfWeek, toIsoDate } from "@/lib/date";
+import { DAY_KEYS } from "@/features/goals/lib/goal-applicability";
 import type { Goal } from "@/features/goals/types/goal";
 import type { DayAssignment } from "@/features/planner/lib/day-assignment-store";
+import { computePeriodKey } from "@/features/planner/lib/period-key";
+
+export function isAssignmentInSelectedPeriod(
+  goal: Goal,
+  assignment: DayAssignment,
+  selectedDate: Date,
+): boolean {
+  const currentPeriodKey = computePeriodKey(goal.cadence, selectedDate);
+
+  if (currentPeriodKey && assignment.periodKey !== undefined) {
+    return assignment.periodKey === currentPeriodKey;
+  }
+
+  switch (goal.cadence) {
+    case "daily":
+      return assignment.date === toIsoDate(selectedDate);
+    case "weekly": {
+      const start = toIsoDate(startOfWeek(selectedDate));
+      const end = toIsoDate(endOfWeek(selectedDate));
+      return assignment.date >= start && assignment.date <= end;
+    }
+    case "monthly": {
+      const start = toIsoDate(startOfMonth(selectedDate));
+      const end = toIsoDate(endOfMonth(selectedDate));
+      return assignment.date >= start && assignment.date <= end;
+    }
+    case "yearly": {
+      const year = selectedDate.getFullYear().toString();
+      return assignment.date.startsWith(`${year}-`);
+    }
+    default:
+      return true;
+  }
+}
 
 /**
  * For a goal with noGettingAhead enabled, compute how many additional units
@@ -10,8 +44,9 @@ import type { DayAssignment } from "@/features/planner/lib/day-assignment-store"
  * "Effective cap" = goal.target + goal.backlog (backlog is carried-over obligation).
  *
  * For auto-scheduled weekly goals (cadence === "weekly" with activeDays set),
- * preferred days that don't yet have a manual assignment each consume one cap slot —
- * because they will automatically appear in the week view and count toward the period.
+ * preferred days that don't yet have a manual assignment each consume their per-day
+ * allocation, because they will automatically appear in the week view and count
+ * toward the period.
  *
  * Returns a non-negative number. 0 means the goal is fully allocated.
  */
@@ -23,10 +58,13 @@ export function computeRemainingCapacity(
   if (!goal.noGettingAhead || goal.target === undefined) return Infinity;
 
   const effectiveCap = goal.target + (goal.backlog ?? 0);
+  const relevantAssignments = existingAssignments.filter(
+    (a) => a.goalId === goal.id && isAssignmentInSelectedPeriod(goal, a, selectedDate),
+  );
 
   // Sum up all manually assigned units for this goal
-  const assignedPlanned = existingAssignments
-    .filter((a) => a.goalId === goal.id)
+  const assignedPlanned = relevantAssignments
+    .filter((a) => !a.skipped)
     .reduce((sum, a) => sum + (a.targetAmount ?? 1), 0);
 
   // For auto-scheduled weekly goals: preferred days without a manual assignment
@@ -37,10 +75,13 @@ export function computeRemainingCapacity(
   let autoScheduledCount = 0;
   if (goal.cadence === "weekly" && goal.activeDays && goal.activeDays.length > 0) {
     const replacedPreferredDays = new Set(
-      existingAssignments
-        .filter((a) => a.goalId === goal.id && a.replacedAutoDate)
+      relevantAssignments
+        .filter((a) => a.replacedAutoDate)
         .map((a) => a.replacedAutoDate!),
     );
+    const perDayTarget = goal.type === "quantified" && goal.target && goal.activeDays.length
+      ? Math.ceil(goal.target / goal.activeDays.length)
+      : 1;
     const weekStart = startOfWeek(selectedDate);
     for (let i = 0; i < 7; i++) {
       const d = new Date(weekStart);
@@ -51,9 +92,9 @@ export function computeRemainingCapacity(
         goal.activeDays.includes(dayKey) &&
         (!goal.startDate || dIso >= goal.startDate) &&
         !replacedPreferredDays.has(dIso) &&
-        !existingAssignments.some((a) => a.goalId === goal.id && a.date === dIso)
+        !relevantAssignments.some((a) => a.date === dIso)
       ) {
-        autoScheduledCount++;
+        autoScheduledCount += perDayTarget;
       }
     }
   }

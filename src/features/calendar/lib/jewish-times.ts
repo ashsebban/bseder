@@ -1,4 +1,4 @@
-import { CandleLightingEvent, HavdalahEvent, HDate, HebrewCalendar, Location, OmerEvent, flags } from "@hebcal/core";
+import { CandleLightingEvent, HavdalahEvent, HDate, HebrewCalendar, OmerEvent, flags } from "@hebcal/core";
 
 const HOLIDAY_FLAG_MASK =
   flags.CHAG |
@@ -12,22 +12,14 @@ const HOLIDAY_FLAG_MASK =
   flags.SPECIAL_SHABBAT |
   flags.CHANUKAH_CANDLES;
 import type { CalendarDayMetadata } from "@/features/calendar/types/calendar";
-import { getCalendarLocationByKey } from "@/features/calendar/lib/locations";
+import { resolveLocation } from "@/features/calendar/lib/locations";
 import { toIsoDate } from "@/features/calendar/lib/date";
+import { formatTimeInZone } from "@/features/calendar/lib/time-format";
 import type { CalendarPreferences } from "@/features/settings/types/calendar-preferences";
 import { getHavdalahOptions } from "@/features/settings/lib/calendar-preferences";
 
 function stripParshaPrefix(value: string) {
   return value.replace(/^Parashat\s+/i, "").trim();
-}
-
-function formatTime(date: Date, timeZone: string, hour12: boolean) {
-  return new Intl.DateTimeFormat("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12,
-    timeZone,
-  }).format(date);
 }
 
 /** Returns just the Hebrew year in gematria notation (e.g. "תשפ״ו") for a given date. */
@@ -51,13 +43,13 @@ export function buildJewishTimesByDate(start: Date, end: Date, preferences: Cale
   }
 
   // ── Base events: holidays, parsha, omer (no location required) ────────────
-  const baseEvents = HebrewCalendar.calendar({ start, end, sedrot: true, omer: preferences.showOmer });
+  const baseEvents = HebrewCalendar.calendar({ start, end, sedrot: true, omer: true });
 
   for (const event of baseEvents) {
     const dateKey = toIsoDate(event.getDate().greg());
     const existing = metadataByDate.get(dateKey) ?? {};
 
-    if (preferences.showOmer && event instanceof OmerEvent) {
+    if (event instanceof OmerEvent) {
       existing.omerDay = event.omer;
       metadataByDate.set(dateKey, existing);
       continue;
@@ -82,9 +74,7 @@ export function buildJewishTimesByDate(start: Date, end: Date, preferences: Cale
   }
 
   // ── Location-dependent: candle lighting, havdalah, fast times ─────────────
-  const locationOption = getCalendarLocationByKey(preferences.locationKey);
-  if (!locationOption) return metadataByDate;
-  const location = Location.lookup(locationOption.lookupName);
+  const location = resolveLocation(preferences);
   if (!location) return metadataByDate;
 
   const locationEvents = HebrewCalendar.calendar({
@@ -92,7 +82,7 @@ export function buildJewishTimesByDate(start: Date, end: Date, preferences: Cale
     end,
     candlelighting: true,
     sedrot: true,
-    omer: preferences.showOmer,
+    omer: true,
     location,
     hour12: preferences.timeFormat === "12h",
     ...getHavdalahOptions(preferences.havdalahOpinion),
@@ -103,13 +93,13 @@ export function buildJewishTimesByDate(start: Date, end: Date, preferences: Cale
     const existing = metadataByDate.get(dateKey) ?? {};
 
     if (event instanceof CandleLightingEvent) {
-      existing.candleLighting = formatTime(event.eventTime, event.location.getTzid(), preferences.timeFormat === "12h");
+      existing.candleLighting = formatTimeInZone(event.eventTime, event.location.getTzid(), preferences.timeFormat);
       metadataByDate.set(dateKey, existing);
       continue;
     }
 
     if (event instanceof HavdalahEvent) {
-      existing.shabbosEnds = formatTime(event.eventTime, event.location.getTzid(), preferences.timeFormat === "12h");
+      existing.shabbosEnds = formatTimeInZone(event.eventTime, event.location.getTzid(), preferences.timeFormat);
       metadataByDate.set(dateKey, existing);
       continue;
     }
@@ -128,12 +118,12 @@ export function buildJewishTimesByDate(start: Date, end: Date, preferences: Cale
       if (rendered.startsWith("Fast begins")) {
         existing.fastBegins =
           timed.eventTime instanceof Date && timed.location
-            ? formatTime(timed.eventTime, timed.location.getTzid(), preferences.timeFormat === "12h")
+            ? formatTimeInZone(timed.eventTime, timed.location.getTzid(), preferences.timeFormat)
             : rendered.replace(/^Fast begins[:\s]*/i, "").trim();
       } else if (rendered.startsWith("Fast ends")) {
         existing.fastEnds =
           timed.eventTime instanceof Date && timed.location
-            ? formatTime(timed.eventTime, timed.location.getTzid(), preferences.timeFormat === "12h")
+            ? formatTimeInZone(timed.eventTime, timed.location.getTzid(), preferences.timeFormat)
             : rendered.replace(/^Fast ends[:\s]*/i, "").trim();
       } else {
         if (!existing.holidays) existing.holidays = [];

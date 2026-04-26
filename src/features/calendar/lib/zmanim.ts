@@ -1,5 +1,6 @@
 import { Zmanim } from "@hebcal/core";
 import type { Location } from "@hebcal/core";
+import { formatTimeInZone } from "@/features/calendar/lib/time-format";
 import type { CalendarTimeFormat } from "@/features/settings/types/calendar-preferences";
 
 export interface DayZmanim {
@@ -61,12 +62,7 @@ function toFractionalHour(dt: Date | null, tzid: string): number | null {
 }
 
 export function formatZmanTime(date: Date, tzid: string, timeFormat: CalendarTimeFormat): string {
-  return new Intl.DateTimeFormat("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: timeFormat === "12h",
-    timeZone: tzid,
-  }).format(date);
+  return formatTimeInZone(date, tzid, timeFormat);
 }
 
 export function computeDayZmanim(

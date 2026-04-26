@@ -17,10 +17,29 @@ const config: Config = {
           muted: "rgb(var(--color-text-muted) / <alpha-value>)",
           subtle: "rgb(var(--color-text-subtle) / <alpha-value>)",
         },
+        label: "rgb(var(--color-text-muted) / <alpha-value>)",
+        muted: "rgb(var(--color-text-subtle) / <alpha-value>)",
+        subtle: "rgb(var(--color-line) / <alpha-value>)",
         brand: {
           DEFAULT: "rgb(var(--color-brand) / <alpha-value>)",
           strong: "rgb(var(--color-brand-strong) / <alpha-value>)",
           soft: "rgb(var(--color-brand-soft) / <alpha-value>)",
+        },
+        destructive: {
+          DEFAULT: "rgb(var(--color-destructive) / <alpha-value>)",
+          strong: "rgb(var(--color-destructive-strong) / <alpha-value>)",
+          soft: "rgb(var(--color-destructive-soft) / <alpha-value>)",
+          line: "rgb(var(--color-destructive-line) / <alpha-value>)",
+        },
+        warning: {
+          DEFAULT: "rgb(var(--color-warning) / <alpha-value>)",
+          strong: "rgb(var(--color-warning-strong) / <alpha-value>)",
+          soft: "rgb(var(--color-warning-soft) / <alpha-value>)",
+          line: "rgb(var(--color-warning-line) / <alpha-value>)",
+        },
+        urgent: {
+          DEFAULT: "rgb(var(--color-urgent) / <alpha-value>)",
+          soft: "rgb(var(--color-urgent-soft) / <alpha-value>)",
         },
         success: {
           DEFAULT: "rgb(var(--color-success) / <alpha-value>)",
@@ -40,6 +59,12 @@ const config: Config = {
       },
       fontFamily: {
         sans: ["ui-sans-serif", "system-ui", "sans-serif"],
+      },
+      fontSize: {
+        caption: ["10px", { lineHeight: "1.2" }],
+        "type-label": ["11px", { lineHeight: "1.25" }],
+        body: ["13px", { lineHeight: "1.4" }],
+        "body-md": ["14px", { lineHeight: "1.45" }],
       },
     },
   },

@@ -13,6 +13,16 @@
   --color-brand: 58 111 237;
   --color-brand-strong: 37 87 206;
   --color-brand-soft: 229 238 255;
+  --color-destructive: 220 38 38;
+  --color-destructive-strong: 185 28 28;
+  --color-destructive-soft: 254 242 242;
+  --color-destructive-line: 254 202 202;
+  --color-warning: 217 119 6;
+  --color-warning-strong: 180 83 9;
+  --color-warning-soft: 255 251 235;
+  --color-warning-line: 253 230 138;
+  --color-urgent: 245 158 11;
+  --color-urgent-soft: 255 247 237;
   --color-success: 47 154 108;
   --color-success-soft: 232 248 239;
   --color-planned: 148 163 184;
@@ -48,4 +58,12 @@ select {
 
 ::selection {
   background: rgba(58, 111, 237, 0.18);
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }

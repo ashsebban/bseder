@@ -1,10 +1,69 @@
 import { z } from "zod";
 import type { Goal } from "@/features/goals/types/goal";
+import { clearScopedJson, loadScopedJsonArray, saveScopedJson } from "../../../lib/scoped-storage-store";
+
+export const GOALS_STORAGE_UPDATED_EVENT = "goals-storage-updated";
+
+export interface GoalsStorageUpdatedDetail {
+  storageScope: string;
+  goals: Goal[];
+}
+
+function dispatchGoalsStorageUpdated(storageScope: string, goals: Goal[]) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent<GoalsStorageUpdatedDetail>(GOALS_STORAGE_UPDATED_EVENT, {
+    detail: { storageScope, goals },
+  }));
+}
 
 // ─── Storage key versioning ──────────────────────────────────────────────────
 // v1 key — bump to v2 if the schema changes in a breaking way and add a migration below.
 const KEY_V1 = "steinberg_goals.v1";
-const KEY_LEGACY = "steinberg_goals"; // pre-versioning key, migrated on first load
+const DEFAULT_FIXED_GOAL_IDS = new Set([
+  // Legacy pack IDs (keep for existing users)
+  "__omer__",
+  "__pack_tefillin__",
+  "__pack_daf_yomi__",
+  "__pack_chanukah__",
+  "__pack_shacharis__",
+  "__pack_mincha__",
+  "__pack_maariv__",
+  "__pack_shema_morning__",
+  "__pack_shema_night__",
+  "__pack_elul_selichot__",
+  "__pack_kotel__",
+  // New prebuilt goal IDs
+  "__pre_bentching__",
+  "__pre_netilat_yadayim__",
+  "__pre_mishnah_yomit__",
+  "__pre_halacha_yomit__",
+  "__pre_parasha__",
+  "__pre_chitas__",
+  "__pre_tehillim__",
+  "__pre_nach_yomi__",
+  "__pre_elul_shofar__",
+  "__pre_arba_minim__",
+  "__pre_mishloach_manot__",
+  "__pre_tashlich__",
+  "__pre_candles__",
+  "__pre_kiddush__",
+  "__pre_havdalah__",
+  "__pre_parshat_hashavua__",
+  "__pre_seudat_shabbos__",
+  "__pre_maaser__",
+  "__pre_tzedakah_daily__",
+  "__pre_volunteer__",
+  "__pre_bikur_cholim__",
+  "__pre_hachnasas_orchim__",
+  "__pre_mezuzot__",
+  "__pre_lulav_esrog__",
+  "__pre_high_holiday_seats__",
+  "__pre_tevilat_keilim__",
+  "__pre_mussar__",
+  "__pre_cheshbon_nefesh__",
+  "__pre_gratitude__",
+  "__pre_shmiras_halashon__",
+]);
 
 // ─── Zod schema (mirrors Goal interface) ────────────────────────────────────
 // Required fields must be present and well-typed. Optional fields fall back to
@@ -45,6 +104,7 @@ const GoalSchema = z.object({
   preferredMonthDay: z.union([z.literal("first"), z.literal("last"), z.number()]).optional(),
   startsAt: z.string().optional(),
   expiresAt: z.string().optional(),
+  programKey: z.enum(["daf-yomi", "omer"]).optional(),
   lockInDays: z.boolean().optional(),
   adhoc: z.boolean().optional(),
   parentGoalId: z.string().optional(),
@@ -53,44 +113,36 @@ const GoalSchema = z.object({
 
 const GoalsArraySchema = z.array(GoalSchema);
 
+function normalizeStarterPackGoal(goal: Goal): Goal {
+  if (!DEFAULT_FIXED_GOAL_IDS.has(goal.id) || goal.lockInDays !== undefined) return goal;
+  return { ...goal, lockInDays: true };
+}
+
+function normalizeGoals(goals: Goal[]): Goal[] {
+  return goals.map(normalizeStarterPackGoal);
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-export function saveGoals(goals: Goal[]): void {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(KEY_V1, JSON.stringify(goals));
-  } catch {
-    // localStorage unavailable or quota exceeded
+export function saveGoals(storageScope: string, goals: Goal[]): void {
+  const normalizedGoals = normalizeGoals(goals);
+  if (saveScopedJson({ baseKey: KEY_V1, storageScope, value: normalizedGoals })) {
+    dispatchGoalsStorageUpdated(storageScope, normalizedGoals);
   }
 }
 
-export function loadGoals(): Goal[] {
-  if (typeof window === "undefined") return [];
-  try {
-    // Prefer v1 key; migrate from legacy key if not yet upgraded
-    let raw = localStorage.getItem(KEY_V1);
-    if (raw === null) {
-      const legacy = localStorage.getItem(KEY_LEGACY);
-      if (legacy !== null) {
-        // Migrate: write to new key, remove old
-        localStorage.setItem(KEY_V1, legacy);
-        localStorage.removeItem(KEY_LEGACY);
-        raw = legacy;
-      }
-    }
-    if (!raw) return [];
+export function loadGoals(storageScope: string): Goal[] {
+  return loadScopedJsonArray({
+    baseKey: KEY_V1,
+    storageScope,
+    arraySchema: GoalsArraySchema,
+    itemSchema: GoalSchema,
+    normalize: (goals) => normalizeGoals(goals as Goal[]),
+  }) as Goal[];
+}
 
-    const parsed = GoalsArraySchema.safeParse(JSON.parse(raw));
-    if (!parsed.success) {
-      // Partial recovery: keep items that individually pass validation
-      const items: unknown[] = JSON.parse(raw);
-      return items
-        .map((item) => GoalSchema.safeParse(item))
-        .filter((r) => r.success)
-        .map((r) => r.data as Goal);
-    }
-    return parsed.data as Goal[];
-  } catch {
-    return [];
+export function clearGoalsStorage(storageScope: string): void {
+  if (clearScopedJson({ baseKey: KEY_V1, storageScope })) {
+    dispatchGoalsStorageUpdated(storageScope, []);
   }
 }

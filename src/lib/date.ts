@@ -26,6 +26,19 @@ export function todayIso(): string {
   return toIsoDate(new Date());
 }
 
+/** Parse an ISO date string to a UTC midnight Date, suitable for DB storage. */
+export function isoToUtcDate(iso: string): Date {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+}
+
+/** Combine an ISO date and HH:MM time string into a UTC DateTime for DB storage. */
+export function isoAndHHMMToUtcDateTime(isoDate: string, hhmm: string): Date {
+  const [y, mo, d] = isoDate.split("-").map(Number);
+  const [h, mi] = hhmm.split(":").map(Number);
+  return new Date(Date.UTC(y, mo - 1, d, h, mi));
+}
+
 export function addDays(date: Date, amount: number): Date {
   const next = new Date(date);
   next.setDate(next.getDate() + amount);

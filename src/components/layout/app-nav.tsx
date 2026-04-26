@@ -3,39 +3,55 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { User } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { useSession } from "next-auth/react";
 import { StarOfDavid } from "@/components/ui/star-of-david";
+import { UserMenu } from "@/components/layout/user-menu";
+import { siteConfig } from "@/config/site";
 import { cn } from "@/lib/cn";
+import {
+  loadCalendarPreferencesFromStorage,
+} from "@/features/settings/lib/calendar-preferences";
 
-export function AppNav() {
+export function AppNav({ maxWidthClassName = "max-w-[1360px]" }: { maxWidthClassName?: string } = {}) {
   const pathname = usePathname();
+  const { data: session } = useSession();
 
   // Start with SSR-safe href, hydrate from localStorage after mount
   const [calendarHref, setCalendarHref] = useState("/planner");
   useEffect(() => {
+    if (!session?.user?.id) {
+      setCalendarHref("/planner");
+      return;
+    }
     try {
-      const raw = localStorage.getItem("planner.calendar-preferences.v1");
-      if (raw) {
-        const prefs = JSON.parse(raw) as { defaultView?: string };
-        if (prefs.defaultView) setCalendarHref(`/planner?view=${prefs.defaultView}`);
+      const prefs = loadCalendarPreferencesFromStorage(session.user.id);
+      if (prefs?.defaultView) {
+        setCalendarHref(`/planner?view=${prefs.defaultView}`);
+        return;
       }
-    } catch {}
-  }, []);
+    } catch {
+      // Ignore local preference parsing failures.
+    }
+    setCalendarHref("/planner");
+  }, [session?.user?.id]);
 
   const navLinks = [
     { href: calendarHref, base: "/planner", label: "Calendar" },
     { href: "/goals", base: "/goals", label: "Goals" },
+    // Admin link — only rendered for admin users
+    ...(session?.user?.isAdmin ? [{ href: "/admin", base: "/admin", label: "Admin" }] : []),
   ];
 
   return (
     <nav className="sticky top-0 z-40 border-b border-line/60 bg-surface/90 backdrop-blur-sm">
-      <div className="mx-auto flex max-w-[1360px] items-center gap-6 px-6 py-3 md:px-8">
+      <div className={cn("mx-auto flex items-center gap-6 px-6 py-3 md:px-8", maxWidthClassName)}>
+        {/* Logo */}
         <div className="flex items-center gap-2.5">
           <StarOfDavid className="h-6 w-6 text-brand" />
-          <span className="text-base font-bold tracking-tight text-text">B&rsquo;Seder</span>
+          <span className="text-base font-bold tracking-tight text-text">{siteConfig.name}</span>
         </div>
 
+        {/* Nav links */}
         <div className="flex items-center gap-1">
           {navLinks.map(({ href, base, label }) => {
             const active = pathname === base || pathname.startsWith(base + "/");
@@ -47,7 +63,10 @@ export function AppNav() {
                   "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
                   active
                     ? "bg-brand/10 text-brand"
-                    : "text-text-muted hover:bg-slate-100 hover:text-text",
+                    : "text-text-muted hover:bg-surface-muted hover:text-text",
+                  // Admin link gets a subtle amber tint when active
+                  base === "/admin" && active && "bg-amber-50 text-amber-700",
+                  base === "/admin" && !active && "hover:bg-amber-50 hover:text-amber-700",
                 )}
               >
                 {label}
@@ -57,10 +76,9 @@ export function AppNav() {
         </div>
 
         <div className="flex-1" />
-        <Button variant="secondary" size="sm" className="gap-2">
-          <User className="h-4 w-4" />
-          Account
-        </Button>
+
+        {/* User avatar + dropdown */}
+        <UserMenu />
       </div>
     </nav>
   );
