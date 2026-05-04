@@ -1,4 +1,4 @@
-import { db } from "@/lib/db";
+import { db, withPrismaReconnectRetry } from "@/lib/db";
 
 function nowStamp() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -9,21 +9,25 @@ export function normalizeEmail(email: string): string {
 }
 
 export async function findActiveUserById(id: string) {
-  return db.user.findFirst({
-    where: {
-      id,
-      deletedAt: null,
-    },
-  });
+  return withPrismaReconnectRetry(() =>
+    db.user.findFirst({
+      where: {
+        id,
+        deletedAt: null,
+      },
+    }),
+  );
 }
 
 export async function findActiveUserByEmail(email: string) {
-  return db.user.findFirst({
-    where: {
-      email: normalizeEmail(email),
-      deletedAt: null,
-    },
-  });
+  return withPrismaReconnectRetry(() =>
+    db.user.findFirst({
+      where: {
+        email: normalizeEmail(email),
+        deletedAt: null,
+      },
+    }),
+  );
 }
 
 function buildDeletedPlaceholderEmail(userId: string) {

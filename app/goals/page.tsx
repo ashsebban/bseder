@@ -1,8 +1,12 @@
 import { redirect } from "next/navigation";
 import { PageShell, PageContainer } from "@/components/ui/page-shell";
 import { AppNav } from "@/components/layout/app-nav";
+import { ActiveGoalsWidget } from "@/features/goals/components/active-goals-widget";
+import { AtRiskWidget, CatchUpWidget } from "@/features/goals/components/catch-up-widget";
 import { GoalsWorkspace } from "@/features/goals/components/goals-workspace";
+import { OnTrackWidget } from "@/features/goals/components/on-track-widget";
 import { ActiveStreaksWidget, BestStreakWidget } from "@/features/goals/components/streak-widgets";
+import { ThisWeekWidget } from "@/features/goals/components/this-week-widget";
 import { TodaysFocusWidget } from "@/features/goals/components/todays-focus-widget";
 import { getCurrentActiveUser } from "@/lib/current-active-user";
 
@@ -19,9 +23,10 @@ function WidgetShell({ title, description, height = "h-36" }: { title: string; d
   );
 }
 
-export default async function GoalsPage() {
+export default async function GoalsPage({ searchParams }: { searchParams: Promise<{ new?: string }> }) {
   const currentUser = await getCurrentActiveUser();
   if (!currentUser) redirect("/auth/sign-in");
+  const { new: initialOpenCadence } = await searchParams;
 
   return (
     <PageShell>
@@ -36,24 +41,21 @@ export default async function GoalsPage() {
 
         {/* Stat bar — 4 quick-glance metrics */}
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <WidgetShell title="Active Goals" description="Total active goal count" height="h-24" />
+          <ActiveGoalsWidget storageScope={currentUser.user.id} />
           <BestStreakWidget storageScope={currentUser.user.id} />
-          <WidgetShell title="This Week" description="Goals completed vs. scheduled" height="h-24" />
-          <WidgetShell title="On Track" description="% of goals on pace" height="h-24" />
+          <ThisWeekWidget storageScope={currentUser.user.id} />
+          <OnTrackWidget storageScope={currentUser.user.id} />
         </div>
 
         {/* Main goals list — full width, stays the hero */}
-        <GoalsWorkspace storageScope={currentUser.user.id} />
+        <GoalsWorkspace storageScope={currentUser.user.id} initialOpenCadence={initialOpenCadence} />
 
-        {/* Second tier — 3 columns */}
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        {/* Second tier — focused operational widgets */}
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           <ActiveStreaksWidget storageScope={currentUser.user.id} />
           <TodaysFocusWidget storageScope={currentUser.user.id} />
-          <WidgetShell
-            title="Overdue & At Risk"
-            description="Goals falling behind pace or with missed days"
-            height="h-48"
-          />
+          <CatchUpWidget storageScope={currentUser.user.id} />
+          <AtRiskWidget storageScope={currentUser.user.id} />
         </div>
 
         {/* Third tier — 2 columns */}

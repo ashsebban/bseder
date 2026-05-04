@@ -16,7 +16,9 @@ export interface GoalApplicabilityOptions {
  * Used at assignment-generation time to suppress planner slots when streak is gone.
  */
 function isKillStreakBroken(goal: Goal, date: Date): boolean {
-  if (goal.ifUnfinished !== "kill-streak" || goal.type !== "binary" || goal.cadence !== "daily") {
+  if (goal.status === "killed") return true;
+  const isKillOnMiss = goal.killOnMiss !== undefined ? goal.killOnMiss : goal.ifUnfinished === "kill-streak";
+  if (!isKillOnMiss || goal.type !== "binary" || goal.cadence !== "daily") {
     return false;
   }
   const completed = new Set(goal.completedDates ?? []);

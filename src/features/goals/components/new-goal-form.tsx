@@ -13,6 +13,8 @@ import { ZMANIM_NOTCHES, ZmanimArcPicker } from "@/features/onboarding/component
 import type { HolidayExcludes } from "@/features/goals/components/holiday-chip-select";
 import type { Goal, GoalCadence, GoalType, IfUnfinished } from "@/features/goals/types/goal";
 import { todayIso } from "@/lib/date";
+import { DailyScheduleFields } from "@/features/goals/components/daily-schedule-fields";
+import { useGoalForm } from "@/features/goals/hooks/use-goal-form";
 
 const DEFAULT_ACTIVE_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri"];
 
@@ -151,58 +153,30 @@ const CADENCE_OPTIONS: { value: GoalCadence; label: string }[] = [
 ];
 
 export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose, allowCadenceChange }: NewGoalFormProps) {
-  const isEditing = !!existingGoal;
-  const [cadence, setCadence] = useState<GoalCadence>(existingGoal?.cadence ?? defaultCadence);
+  const { state, setters, computed, handleSave } = useGoalForm({
+    defaultCadence,
+    existingGoal,
+    onSave,
+    onClose,
+  });
 
-  const [title, setTitle] = useState(existingGoal?.title ?? "");
-  const [goalType, setGoalType] = useState<GoalType>(existingGoal?.type ?? "binary");
-  const [target, setTarget] = useState(existingGoal?.target ? String(existingGoal.target) : "");
-  const [targetUnit, setTargetUnit] = useState(existingGoal?.targetUnit ?? "");
-  const [activeDays, setActiveDays] = useState<string[]>(
-    existingGoal?.activeDays ?? (defaultCadence === "daily" ? DEFAULT_ACTIVE_DAYS : [])
-  );
-  const [holidayExcludes, setHolidayExcludes] = useState<HolidayExcludes>(
-    existingGoal?.excludes
-      ? { categories: existingGoal.excludes.categories ?? [], individual: existingGoal.excludes.individual ?? [] }
-      : DEFAULT_EXCLUDES,
-  );
-  const [showHolidayPicker, setShowHolidayPicker] = useState(false);
-  const [startDate, setStartDate] = useState(existingGoal?.startDate ?? todayIso());
-  const [endType, setEndType] = useState(
-    existingGoal?.endDate ? "date" : existingGoal?.endAfterPeriods ? "count" : "none",
-  );
-  const [endDate, setEndDate] = useState(existingGoal?.endDate ?? "");
-  const [endCount, setEndCount] = useState(existingGoal?.endAfterPeriods ? String(existingGoal.endAfterPeriods) : "90");
-  const [dueDate, setDueDate] = useState(existingGoal?.dueDate ?? "");
-  const [ifUnfinished, setIfUnfinished] = useState<IfUnfinished>(existingGoal?.ifUnfinished ?? "forgive");
+  const {
+    cadence, title, goalType, target, targetUnit, activeDays, holidayExcludes,
+    showHolidayPicker, startDate, endType, endDate, endCount, dueDate, ifUnfinished,
+    onMiss, carryover, killOnMiss, dayModel, noGettingAhead, startsAt, expiresAt,
+    timeWindowModalOpen, lockInDays, monthDayType, specificMonthDay,
+  } = state;
 
-  const [noGettingAhead, setNoGettingAhead] = useState(existingGoal?.noGettingAhead ?? false);
-  const [startsAt, setStartsAt] = useState(existingGoal?.startsAt ?? "");
-  const [expiresAt, setExpiresAt] = useState(existingGoal?.expiresAt ?? "");
-  const [timeWindowModalOpen, setTimeWindowModalOpen] = useState(false);
-  const [lockInDays, setLockInDays] = useState(existingGoal?.lockInDays ?? false);
+  const {
+    setCadence, setTitle, setGoalType, setTarget, setTargetUnit, setActiveDays, setHolidayExcludes,
+    setShowHolidayPicker, setStartDate, setEndType, setEndDate, setEndCount, setDueDate, setIfUnfinished,
+    setOnMiss, setCarryover, setKillOnMiss, setDayModel, setNoGettingAhead, setStartsAt, setExpiresAt,
+    setTimeWindowModalOpen, setLockInDays, setMonthDayType, setSpecificMonthDay,
+  } = setters;
 
-  // Monthly scheduling state
-  const defaultMonthDayType = (): "first" | "last" | "specific" | "flexible" => {
-    const p = existingGoal?.preferredMonthDay;
-    if (p === "first") return "first";
-    if (p === "last") return "last";
-    if (typeof p === "number") return "specific";
-    return "flexible";
-  };
-  const [monthDayType, setMonthDayType] = useState<"first" | "last" | "specific" | "flexible">(defaultMonthDayType);
-  const [specificMonthDay, setSpecificMonthDay] = useState(
-    typeof existingGoal?.preferredMonthDay === "number" ? String(existingGoal.preferredMonthDay) : ""
-  );
+  const { isEditing, isOneTime, isDaily, isNumeric, activeTimePreset, summary, showIfUnfinished } = computed;
 
-  const isOneTime = cadence === "one-time";
-  const isDaily = cadence === "daily";
-  const isNumeric = goalType === "quantified";
-  const showIfUnfinished = cadence !== "one-time" && cadence !== "yearly";
-  const activeTimePreset = getMatchingTimePresetKey(startsAt, expiresAt);
   const timeWindowSummary = describeTimeWindow(startsAt, expiresAt);
-
-  const summary = buildSummary({ title, cadence, type: goalType, target, targetUnit, activeDays, holidayExcludes, endType, endDate, endCount, startDate, monthDayType, specificMonthDay });
 
   // Sub-page: show holiday picker inline instead of the form
   if (showHolidayPicker) {
@@ -213,43 +187,6 @@ export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose, all
         onBack={() => setShowHolidayPicker(false)}
       />
     );
-  }
-
-  function handleSave() {
-    const goal: Goal = {
-      id: existingGoal?.id ?? crypto.randomUUID(),
-      title: title.trim() || "Untitled goal",
-      cadence,
-      status: existingGoal?.status ?? "ongoing",
-      type: goalType,
-      target: isNumeric && target ? Number(target) : undefined,
-      targetUnit: isNumeric && targetUnit ? targetUnit.trim() : undefined,
-      current: existingGoal?.current ?? 0,
-      completedDates: existingGoal?.completedDates ?? (isDaily && !isNumeric ? [] : undefined),
-
-      noGettingAhead: isNumeric && !isDaily && !isOneTime ? noGettingAhead : undefined,
-      backlog: existingGoal?.backlog,
-      activeDays: cadence === "daily" ? activeDays
-        : cadence === "weekly" && activeDays.length > 0 ? activeDays
-        : undefined,
-      preferredMonthDay: cadence === "monthly" && monthDayType !== "flexible"
-        ? (monthDayType === "specific" ? (Number(specificMonthDay) || undefined) : monthDayType)
-        : undefined,
-      excludes: isDaily && (holidayExcludes.categories.length > 0 || holidayExcludes.individual.length > 0)
-        ? { categories: holidayExcludes.categories, individual: holidayExcludes.individual }
-        : undefined,
-      startsAt: isDaily && startsAt ? startsAt : undefined,
-      expiresAt: isDaily && expiresAt ? expiresAt : undefined,
-      programKey: existingGoal?.programKey,
-      lockInDays: (isDaily || (cadence === "weekly" && activeDays.length > 0)) ? lockInDays || undefined : undefined,
-      ifUnfinished: showIfUnfinished ? ifUnfinished : undefined,
-      startDate,
-      endDate: endType === "date" ? endDate || undefined : undefined,
-      endAfterPeriods: endType === "count" ? Number(endCount) || undefined : undefined,
-      dueDate: isOneTime ? dueDate || undefined : undefined,
-    };
-    onSave(goal);
-    onClose();
   }
 
   return (
@@ -303,6 +240,45 @@ export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose, all
         </Select>
       </div>
 
+      {/* Calendar system — not shown for one-time goals */}
+      {!isOneTime ? (
+        <div className="space-y-1.5">
+          <label className={labelClass}>Calendar</label>
+          <div className="flex gap-2">
+            {(["civil", "jewish"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setDayModel(value === "civil" ? undefined : value)}
+                className={cn(
+                  "flex-1 rounded-2xl border px-4 py-3 text-left transition",
+                  (dayModel ?? "civil") === value
+                    ? "border-brand/50 bg-brand-soft"
+                    : "border-line bg-white hover:border-brand/30",
+                )}
+              >
+                <div className={cn("text-sm font-semibold", (dayModel ?? "civil") === value ? "text-brand" : "text-text")}>
+                  {value === "civil" ? "Gregorian" : "Jewish"}
+                </div>
+                <div className="mt-0.5 text-xs text-text-muted">
+                  {value === "civil"
+                    ? "Days run midnight to midnight"
+                    : cadence === "monthly"
+                    ? "Hebrew months · days start at nightfall"
+                    : cadence === "yearly"
+                    ? "Hebrew year (Rosh Hashana) · days start at nightfall"
+                    : "Days start at nightfall (Tzais)"}
+                </div>
+              </button>
+            ))}
+          </div>
+          {dayModel === "jewish" && (
+            <p className="text-xs text-amber-700">
+              Sunset times use your location from Settings. Without a location, nightfall defaults to 6 PM.
+            </p>
+          )}
+        </div>
+      ) : null}
 
       {/* Numeric target fields */}
       {isNumeric ? (
@@ -333,103 +309,20 @@ export function NewGoalForm({ defaultCadence, existingGoal, onSave, onClose, all
 
       {/* Daily: days picker + toggles + time window + exceptions */}
       {isDaily ? (
-        <div className="space-y-4 rounded-2xl border border-line/60 bg-surface-muted/40 p-4">
-          {/* 1. Days */}
-          <div className="space-y-2">
-            <label className={labelClass}>Days</label>
-            <DayPicker value={activeDays} onChange={setActiveDays} />
-          </div>
-
-          {/* 2. Lock In + Done Ahead */}
-          <div className="space-y-2">
-            <button
-              type="button"
-              role="switch"
-              aria-checked={lockInDays}
-              onClick={() => setLockInDays((v) => !v)}
-              className="flex w-full items-center justify-between rounded-xl border border-line bg-white px-3 py-2.5 transition hover:border-brand/30"
-            >
-              <div className="text-left">
-                <p className="text-sm font-semibold text-text">Lock in days</p>
-                <p className="mt-0.5 text-xs text-text-subtle">
-                  {lockInDays ? "Set in stone — can't be moved to another day or removed from it" : "Flexible — can be dragged to another day or removed from it"}
-                </p>
-              </div>
-              <div className={`ml-3 flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-200 ${lockInDays ? "bg-brand" : "bg-line"}`}>
-                <div className={`h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${lockInDays ? "translate-x-5" : "translate-x-0.5"}`} />
-              </div>
-            </button>
-          </div>
-
-          {/* 3. Time Window */}
-          <div className="space-y-1.5">
-            <label className={labelClass}>
-              Time window{" "}
-              <span className="font-normal normal-case tracking-normal text-text-subtle">(optional)</span>
-            </label>
-            <div className="space-y-3 rounded-2xl border border-line bg-white p-3 shadow-soft">
-              <button
-                type="button"
-                onClick={() => setTimeWindowModalOpen(true)}
-                className="flex w-full items-start justify-between gap-3 rounded-xl px-1 py-0.5 text-left transition hover:bg-surface-muted/60"
-              >
-                <div>
-                  <p className="text-sm font-semibold text-text">{timeWindowSummary.title}</p>
-                  <p className="mt-0.5 text-xs leading-relaxed text-text-subtle">{timeWindowSummary.detail}</p>
-                </div>
-                <span className="shrink-0 rounded-full border border-line/80 px-2.5 py-1 text-[11px] font-semibold text-text-muted">
-                  Custom
-                </span>
-              </button>
-
-              <div className="flex flex-wrap gap-2">
-                {TIME_WINDOW_PRESETS.map((preset) => {
-                  const active = activeTimePreset === preset.key;
-                  return (
-                    <button
-                      key={preset.key}
-                      type="button"
-                      onClick={() => {
-                        setStartsAt(preset.startsAt);
-                        setExpiresAt(preset.expiresAt);
-                      }}
-                      className={cn(
-                        "rounded-full border px-3 py-1.5 text-xs font-semibold transition",
-                        active
-                          ? "border-brand/50 bg-brand-soft text-brand"
-                          : "border-line/80 bg-surface text-text-muted hover:border-brand/30 hover:text-text",
-                      )}
-                    >
-                      {preset.label}
-                    </button>
-                  );
-                })}
-                <button
-                  type="button"
-                  onClick={() => setTimeWindowModalOpen(true)}
-                  className={cn(
-                    "rounded-full border px-3 py-1.5 text-xs font-semibold transition",
-                    activeTimePreset === "custom"
-                      ? "border-brand/50 bg-brand-soft text-brand"
-                      : "border-line/80 bg-surface text-text-muted hover:border-brand/30 hover:text-text",
-                  )}
-                >
-                  Custom…
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* 4. Exceptions */}
-          <div className="space-y-1.5">
-            <label className={labelClass}>Except</label>
-            <HolidayChipSelect
-              value={holidayExcludes}
-              onChange={setHolidayExcludes}
-              onCustomize={() => setShowHolidayPicker(true)}
-            />
-          </div>
-        </div>
+        <DailyScheduleFields
+          activeDays={activeDays}
+          setActiveDays={setActiveDays}
+          lockInDays={lockInDays}
+          setLockInDays={setLockInDays}
+          timeWindowSummary={timeWindowSummary}
+          activeTimePreset={activeTimePreset}
+          setStartsAt={setStartsAt}
+          setExpiresAt={setExpiresAt}
+          setTimeWindowModalOpen={setTimeWindowModalOpen}
+          holidayExcludes={holidayExcludes}
+          setHolidayExcludes={setHolidayExcludes}
+          setShowHolidayPicker={setShowHolidayPicker}
+        />
       ) : null}
 
       {/* Weekly: day-of-week picker */}

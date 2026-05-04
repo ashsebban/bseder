@@ -1,14 +1,14 @@
 "use client";
 
-import { useMemo, useState, useEffect, useCallback, useRef } from "react";
+import { useMemo, useState, useEffect, useCallback } from "react";
 import { cn } from "@/lib/cn";
 import { useRouter } from "next/navigation";
 import { useCalendarRouterState } from "@/features/calendar/hooks/use-calendar-router-state";
-import { getRelativeDayLabel, startOfDay } from "@/features/calendar/lib/date";
+import { getRelativeDayLabel, startOfDay } from "@/lib/date";
 import { getHebrewYearLabel } from "@/features/calendar/lib/jewish-times";
 import { resolveAssignmentsForAction, suggestedAssignmentAmount } from "@/features/calendar/lib/assignment-actions";
 import { computeDayZmanim } from "@/features/calendar/lib/zmanim";
-import { startOfMonth, endOfMonth, startOfWeek, toIsoDate } from "@/features/calendar/lib/date";
+import { startOfMonth, endOfMonth, startOfWeek, toIsoDate } from "@/lib/date";
 import { resolveLocation, getCalendarLocationByKey } from "@/features/calendar/lib/locations";
 import { buildMonthView, buildWeekView, getViewTitle } from "@/features/calendar/lib/view-models";
 import { CalendarHeader } from "@/features/calendar/components/calendar-header";
@@ -16,14 +16,14 @@ import { MonthGrid } from "@/features/calendar/components/month-grid";
 import { WeekGrid } from "@/features/calendar/components/week-grid";
 import { DayFocus } from "@/features/calendar/components/day-focus";
 import { EditableGoalTitle, GoalListRow } from "@/features/calendar/components/goal-list-row";
-import { DailyBacklogBadge } from "@/components/planner/daily-backlog-badge";
+import { DailyBacklogBadge } from "@/features/planner/components/daily-backlog-badge";
 import {
   buildGoalOccurrencesForDate,
   sortGoalOccurrences,
   type GoalOccurrence,
 } from "@/features/calendar/lib/goal-occurrences";
-import { isTimeInGoalWindowFraction } from "@/features/calendar/lib/goal-time-window";
-import { CalendarSettingsMenu } from "@/features/settings/components/calendar-settings-menu";
+import { getGoalTimePlacementForTime, MAARIV_GOAL_ID } from "@/features/calendar/lib/goal-time-window";
+import { getGoalOccurrenceDateForPlannerDate } from "@/features/calendar/lib/goal-day";
 import { useSyncedCalendarPreferences } from "@/features/settings/hooks/use-synced-calendar-preferences";
 import {
   DndContext,
@@ -35,7 +35,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import { GoalTray } from "@/features/planner/components/goal-tray";
+import { DrawerGoalTray } from "@/features/planner/components/goal-tray";
 import { type DayAssignment } from "@/features/planner/lib/day-assignment-store";
 import { parseSessionGroupActionId } from "@/features/planner/lib/day-assignment-groups";
 import type { Goal } from "@/features/goals/types/goal";
@@ -44,15 +44,27 @@ import { computeRemainingCapacity } from "@/features/planner/lib/assignment-rule
 import { getDailyBacklogEntries, type DailyBacklogEntry } from "@/features/goals/lib/daily-backlog";
 import { Drawer } from "@/components/ui/drawer";
 import type { CalendarDayMetadata } from "@/features/calendar/types/calendar";
-import { CalendarMetaPills, buildCalendarMetaPills } from "@/components/planner/calendar-meta-pills";
-import { PlannerModalCard } from "@/components/planner/planner-modal-card";
-import { ReorderGrip } from "@/components/planner/reorder-grip";
-import { TaskListEmptyState } from "@/components/planner/inline-add-task";
+import { CalendarMetaPills, buildCalendarMetaPills } from "@/features/planner/components/calendar-meta-pills";
+import { PlannerModalCard } from "@/features/planner/components/planner-modal-card";
+import { ReorderGrip } from "@/features/planner/components/reorder-grip";
+import { TaskListEmptyState } from "@/features/planner/components/inline-add-task";
 import type { CalendarPreferences } from "@/features/settings/types/calendar-preferences";
 import { useCalendarData } from "@/features/calendar/hooks/use-calendar-data";
 
 
 const TIMELINE_START_HOUR = 0;
+const TIMELINE_TOTAL_MINUTES = 24 * 60;
+
+function getTimelineDropMinutes(event: DragEndEvent, slotMinutes: number, snapMins: number): number {
+  const translatedTop = event.active.rect.current.translated?.top;
+  const overTop = event.over?.rect.top;
+  if (translatedTop === undefined || overTop === undefined) return slotMinutes;
+
+  const timelineTop = overTop - slotMinutes;
+  const rawMinutes = translatedTop - timelineTop;
+  const snapped = Math.round(rawMinutes / snapMins) * snapMins;
+  return Math.max(0, Math.min(TIMELINE_TOTAL_MINUTES - snapMins, snapped));
+}
 
 function getGoalIdFromDragId(dragId: string): string | null {
   if (dragId.startsWith("daily:")) return dragId.slice("daily:".length);
@@ -69,6 +81,12 @@ function getGoalIdFromDragId(dragId: string): string | null {
     return null;
   }
   return dragId;
+}
+
+function getAssignmentIdFromDragId(dragId: string): string | null {
+  if (dragId.startsWith("assignment:")) return dragId.slice("assignment:".length);
+  if (dragId.startsWith("checklist-collapsed:")) return dragId.slice("checklist-collapsed:".length);
+  return null;
 }
 
 function getEventClientPoint(event: Event | null): { x: number; y: number } | null {
@@ -125,6 +143,7 @@ function AmountPrompt({
   maxAmount,
   defaultAmount,
   title,
+  actionLabel = "Save",
 }: {
   goal: Goal;
   dayLabel: string;
@@ -133,6 +152,7 @@ function AmountPrompt({
   maxAmount?: number;
   defaultAmount?: number;
   title?: string;
+  actionLabel?: string;
 }) {
   const [value, setValue] = useState(() => {
     const raw = defaultAmount ?? 1;
@@ -149,7 +169,7 @@ function AmountPrompt({
       actions={[
         { label: "Cancel", onClick: onCancel, variant: "secondary" },
         {
-          label: `Add to ${dayLabel.split(",")[0]}`,
+          label: actionLabel,
           onClick: () => onConfirm(clamp(Number(value) || 1)),
           variant: "primary",
           disabled: maxAmount === 0,
@@ -314,7 +334,6 @@ function DayPanelContent({
   metadata,
   goals,
   dayAssignments,
-  excludedByGoal,
   onToggleAssignment,
   onToggleDate,
   goalOrder,
@@ -326,7 +345,6 @@ function DayPanelContent({
   metadata?: CalendarDayMetadata;
   goals: Goal[];
   dayAssignments: DayAssignment[];
-  excludedByGoal: Map<string, Set<string>>;
   onToggleAssignment: (id: string) => void;
   onToggleDate: (goalId: string, isoDate: string) => void;
   goalOrder: string[];
@@ -345,7 +363,6 @@ function DayPanelContent({
       date,
       goals,
       dayAssignments,
-      excludedByGoal,
     }),
     goalOrder,
   );
@@ -411,14 +428,13 @@ export function CalendarWorkspace({
 }) {
   const router = useRouter();
   const calendar = useCalendarRouterState();
-  const { preferences, hydrated, updatePreference, resetPreferences, saveState } = useSyncedCalendarPreferences(initialPreferences, storageScope);
+  const { preferences, updatePreference } = useSyncedCalendarPreferences(initialPreferences, storageScope);
   const today = startOfDay(new Date());
 
   const {
     goals,
     assignments: plannerDayAssignments,
     goalOrder,
-    excludedByGoal,
     metadataByDate,
     amountPrompt,
     capBlockedGoal,
@@ -440,29 +456,17 @@ export function CalendarWorkspace({
     clearPending,
     openCapBlockedModal,
     openAssignmentModal,
+    syncTimeCaveatFollowup,
   } = useCalendarData({ storageScope, calendar, preferences });
 
   const [sidePanelDate, setSidePanelDate] = useState<Date | null>(null);
 
   // Start open (matches SSR); sync from localStorage after hydration to avoid mismatch
-  const [trayOpen, setTrayOpen] = useState(true);
-  const [trayFilter, setTrayFilter] = useState<"all" | "hide-done" | "hide-allocated">("all");
-  const [trayFilterMenuOpen, setTrayFilterMenuOpen] = useState(false);
-  const trayFilterMenuRef = useRef<HTMLDivElement>(null);
+  const [trayOpen, setTrayOpen] = useState(false);
   useEffect(() => {
     const saved = localStorage.getItem("goal-tray-open");
     if (saved !== null) setTrayOpen(saved === "true");
   }, []);
-  useEffect(() => {
-    if (!trayFilterMenuOpen) return;
-    function handleClick(e: MouseEvent) {
-      if (trayFilterMenuRef.current && !trayFilterMenuRef.current.contains(e.target as Node)) {
-        setTrayFilterMenuOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [trayFilterMenuOpen]);
   const [activeGoalId, setActiveGoalId] = useState<string | null>(null);
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
@@ -484,19 +488,16 @@ export function CalendarWorkspace({
     return computeDayZmanim(today, location, preferences.timeFormat);
   }, [calendar.view, preferences.locationKey, preferences.customLocation, preferences.timeFormat]);
 
-  const [viewInitialized, setViewInitialized] = useState(false);
-  useEffect(() => {
-    if (hydrated && !viewInitialized) {
-      calendar.setView(preferences.defaultView);
-      setViewInitialized(true);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated]);
+  const headerZmanim = useMemo(() => {
+    const location = resolveLocation(preferences);
+    if (!location) return null;
+    return computeDayZmanim(today, location, preferences.timeFormat);
+  }, [today, preferences.locationKey, preferences.customLocation, preferences.timeFormat]);
 
   // When weekStartsOn changes in week view, snap selectedDate to the new week start
   // so the displayed week aligns with the change instead of shifting to a prior week.
   useEffect(() => {
-    if (!viewInitialized || calendar.view !== "week") return;
+    if (calendar.view !== "week") return;
     const snapped = startOfWeek(calendar.selectedDate, preferences.weekStartsOn);
     if (toIsoDate(snapped) !== toIsoDate(calendar.selectedDate)) {
       calendar.setSelectedDate(snapped);
@@ -516,17 +517,20 @@ export function CalendarWorkspace({
 
     // Drop onto a timeline time slot (day view)
     if (typeof isoDate === "string" && isoDate.startsWith("time-slot:")) {
-      const minutesFromStart = parseInt(isoDate.slice("time-slot:".length), 10);
+      const overSlotMinutes = parseInt(isoDate.slice("time-slot:".length), 10);
+      const minutesFromStart = getTimelineDropMinutes(event, overSlotMinutes, preferences.timelineSnapMins);
       const totalMins = minutesFromStart + TIMELINE_START_HOUR * 60;
       const h = Math.floor(totalMins / 60);
       const m = totalMins % 60;
       const timeStr = `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
       const dayIso = toIsoDate(calendar.selectedDate);
 
-      // Helper: check if a "HH:MM" time falls within a goal's zmanim window
-      const isTimeInGoalWindow = (goal: Goal, hhmm: string): boolean => {
-        const [hh, mm] = hhmm.split(":").map(Number);
-        return isTimeInGoalWindowFraction(goal, dayZmanim ?? undefined, hh + mm / 60);
+      const applyPlacementCaveat = (goal: Goal) => {
+        const placement = getGoalTimePlacementForTime(goal, dayZmanim ?? undefined, timeStr);
+        if (placement.kind === "blocked") return false;
+        if (placement.caveat) syncTimeCaveatFollowup(dayIso, placement.caveat);
+        else if (goal.id === MAARIV_GOAL_ID) syncTimeCaveatFollowup(dayIso, null);
+        return true;
       };
 
       if (activeId.startsWith("assignment:") || activeId.startsWith("timeline:")) {
@@ -535,7 +539,7 @@ export function CalendarWorkspace({
           : activeId.slice("timeline:".length);
         const assignment = plannerDayAssignments.find((a) => a.id === assignmentId);
         const goal = assignment ? goals.find((g) => g.id === assignment.goalId) : undefined;
-        if (goal && !isTimeInGoalWindow(goal, timeStr)) return;
+        if (goal && !applyPlacementCaveat(goal)) return;
         setScheduledTime(assignmentId, timeStr);
       } else if (activeId.startsWith("daily:")) {
         // Checklist goal dragged to timeline → create a scheduled assignment.
@@ -543,11 +547,15 @@ export function CalendarWorkspace({
         const goalId = activeId.slice("daily:".length);
         const goal = goals.find((g) => g.id === goalId);
         if (!goal) return;
-        if (!isTimeInGoalWindow(goal, timeStr)) return;
+        if (!applyPlacementCaveat(goal)) return;
         const periodKey = goal.cadence === "daily"
           ? undefined
           : computePeriodKey(goal.cadence, new Date(dayIso + "T00:00:00"));
-        const alreadyDone = goal.completedDates?.includes(dayIso) ?? false;
+        const occurrenceDate = getGoalOccurrenceDateForPlannerDate(goal, dayIso, {
+          scheduledTime: timeStr,
+          zmanim: dayZmanim,
+        });
+        const alreadyDone = goal.completedDates?.includes(occurrenceDate) ?? false;
         if (alreadyDone) {
           assignAlreadyCompleted(goalId, dayIso, periodKey, timeStr, preferences.timelineDefaultDurationMins);
           return;
@@ -557,6 +565,7 @@ export function CalendarWorkspace({
         const goalId = activeId;
         const goal = goals.find((g) => g.id === goalId);
         if (!goal) return;
+        if (!applyPlacementCaveat(goal)) return;
         assignWithTime(goalId, dayIso, timeStr, preferences.timelineDefaultDurationMins);
       }
       return;
@@ -648,9 +657,9 @@ export function CalendarWorkspace({
     } else {
       assign(goalId, isoDate, undefined, periodKey);
     }
-  }, [goals, plannerDayAssignments, preferences, dayZmanim, assign, assignAlreadyCompleted, moveAssignment, setScheduledTime, openAssignmentModal, openCapBlockedModal, calendar.selectedDate]);
+  }, [goals, plannerDayAssignments, preferences, dayZmanim, assign, assignAlreadyCompleted, moveAssignment, setScheduledTime, openAssignmentModal, openCapBlockedModal, syncTimeCaveatFollowup, calendar.selectedDate]);
 
-  const title = getViewTitle(calendar.view, calendar.selectedDate, calendar.selectedDate, today, preferences.weekStartsOn);
+  const title = getViewTitle(calendar.view, calendar.selectedDate, calendar.selectedDate, preferences.weekStartsOn);
   const month = buildMonthView(calendar.selectedDate, calendar.selectedDate, today, metadataByDate, preferences.weekStartsOn);
   const week = buildWeekView(calendar.selectedDate, today, metadataByDate, preferences.weekStartsOn);
   const relativeLabel = getRelativeDayLabel(calendar.selectedDate, today);
@@ -660,17 +669,21 @@ export function CalendarWorkspace({
     selectedLocation?.label ??
     (preferences.customLocation?.label) ??
     null;
-  const monthSubtitle = locationLabel
-    ? `${locationLabel} Shabbos times are shown on Fridays and Saturdays.`
-    : "Select a location to add Friday candle-lighting, Saturday Shabbos end, and parsha.";
+  const locationTimeZone =
+    selectedLocation?.tzid ??
+    preferences.customLocation?.tzid ??
+    null;
   const hebrewYear = preferences.showHebrewDates
     ? getHebrewYearLabel(calendar.selectedDate)
     : undefined;
   const selectedIso = toIsoDate(calendar.selectedDate);
   const goalLibraryCount = goals.filter((goal) => {
     if (goal.adhoc || goal.status === "paused" || goal.status === "done") return false;
-    // Calendar-only seasonal visibility: active window must include selected date.
     if (!goal.endDate) return true;
+    const todayIsoStr = toIsoDate(today);
+    if (goal.startDate && todayIsoStr < goal.startDate) return false;
+    if (todayIsoStr > goal.endDate) return false;
+    // Calendar-only seasonal visibility: active window must include selected date.
     if (goal.startDate && selectedIso < goal.startDate) return false;
     if (selectedIso > goal.endDate) return false;
     return true;
@@ -692,16 +705,36 @@ export function CalendarWorkspace({
           calendar.setSelectedDate(date);
         }}
         title={title.title}
-        subtitle={isMonthView ? monthSubtitle : title.subtitle}
+        subtitle={title.subtitle}
         selectedDate={calendar.selectedDate}
         hebrewYear={hebrewYear}
+        locationLabel={locationLabel}
+        locationTimeZone={locationTimeZone}
+        timeFormat={preferences.timeFormat}
+        zmanim={headerZmanim}
         actionsSlot={
-          <CalendarSettingsMenu
-            preferences={preferences}
-            onPreferenceChange={updatePreference}
-            onReset={resetPreferences}
-            saveState={saveState}
-          />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => { const next = !trayOpen; setTrayOpen(next); localStorage.setItem("goal-tray-open", String(next)); }}
+              className={cn(
+                "inline-flex h-9 items-center gap-2 rounded-full border px-3 text-[12px] font-bold shadow-soft transition-colors",
+                trayOpen
+                  ? "border-brand bg-brand text-white hover:bg-brand-strong"
+                  : "border-line bg-white/80 text-text-muted hover:border-brand/30 hover:bg-white hover:text-brand",
+              )}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="18" rx="1"/>
+              </svg>
+              Goals
+              {goalLibraryCount > 0 && (
+                <span className={cn("rounded-full px-1.5 py-px text-[10px] font-bold", trayOpen ? "bg-white/20 text-white" : "bg-brand-soft text-brand")}>
+                  {goalLibraryCount}
+                </span>
+              )}
+            </button>
+          </div>
         }
       />
 
@@ -719,153 +752,100 @@ export function CalendarWorkspace({
           onDragEnd={handleDragEnd}
           onDragCancel={() => setActiveGoalId(null)}
         >
-          {/* Goal Library — persistent collapsible */}
-          <div className="mb-3 overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
-            <div className="flex items-center px-4 py-3">
-              {/* Left: title + badge — clickable to toggle */}
-              <button
-                type="button"
-                onClick={() => { const next = !trayOpen; setTrayOpen(next); localStorage.setItem("goal-tray-open", String(next)); }}
-                className="flex min-w-0 flex-1 items-center gap-2.5 text-left transition-colors hover:opacity-80"
-              >
-                <span className="text-[13px] font-semibold text-slate-700">Goal Library</span>
-                {goalLibraryCount > 0 && (
-                  <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[10px] font-bold text-brand">
-                    {goalLibraryCount}
-                  </span>
-                )}
-              </button>
-
-              {/* Right: filter icon + chevron */}
-              <div className="flex items-center gap-2">
-                {/* Filter settings icon */}
-                <div ref={trayFilterMenuRef} className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setTrayFilterMenuOpen((s) => !s)}
-                    className={cn(
-                      "rounded-md p-1 transition-colors",
-                      trayFilter !== "all" ? "text-brand" : "text-slate-400 hover:text-slate-600",
-                    )}
-                    title="Filter goals"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="4" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="11" y1="18" x2="13" y2="18"/>
-                    </svg>
-                  </button>
-                  {trayFilterMenuOpen && (
-                    <div className="absolute right-0 top-7 z-50 w-40 rounded-xl border border-slate-200 bg-white py-1 shadow-lg">
-                      {(["all", "hide-done", "hide-allocated"] as const).map((value) => {
-                        const label = value === "all" ? "Show all" : value === "hide-done" ? "Hide done" : "Hide allocated";
-                        return (
-                          <button
-                            key={value}
-                            type="button"
-                            onClick={() => { setTrayFilter(value); setTrayFilterMenuOpen(false); }}
-                            className={cn(
-                              "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] transition-colors hover:bg-slate-50",
-                              trayFilter === value ? "font-semibold text-brand" : "text-slate-600",
-                            )}
-                          >
-                            <span className={cn("h-[7px] w-[7px] rounded-full border", trayFilter === value ? "border-brand bg-brand" : "border-slate-300")} />
-                            {label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                {/* Collapse chevron */}
-                <button
-                  type="button"
-                  onClick={() => { const next = !trayOpen; setTrayOpen(next); localStorage.setItem("goal-tray-open", String(next)); }}
-                  className="rounded-md p-1 text-slate-400 transition-colors hover:text-slate-600"
-                >
-                  <svg width="14" height="8" viewBox="0 0 14 8" fill="none" className={cn("transition-transform duration-200", trayOpen && "rotate-180")}>
-                    <path d="M1 1L7 7L13 1" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </button>
-              </div>
-            </div>
-
-            {trayOpen && (
-              <div className="border-t border-slate-100 px-4 pb-4 pt-3">
-                <GoalTray
+          <div className="flex gap-2">
+            {/* Calendar content — always fills remaining space */}
+            <div className={cn(
+              "min-w-0 flex-1 rounded-2xl border border-slate-200/80 bg-white shadow-sm",
+              calendar.view === "day" ? "p-4" : calendar.view === "week" ? "p-3 md:p-4" : "p-4 md:p-5",
+            )}>
+              {calendar.view === "month" ? (
+                <MonthGrid
+                  month={month}
+                  onSelectDate={(d) => { calendar.setSelectedDate(d); setSidePanelDate(d); }}
+                  onDoubleClickDate={(d) => { calendar.setDateAndView(d, "day"); }}
+                  showOutsideMonthDays={preferences.showOutsideMonthDays}
+                  weekStartsOn={preferences.weekStartsOn}
+                />
+              ) : null}
+              {calendar.view === "week" ? (
+                <WeekGrid
+                  week={week}
+                  goals={goals}
+                  onToggleDate={toggleDate}
+                  planMode={trayOpen}
+                  dayAssignments={plannerDayAssignments}
+                  onToggleAssignment={toggleAssignment}
+                  onRemoveAssignment={unassign}
+                  onAddTask={addTask}
+                  weekStartsOn={preferences.weekStartsOn}
+                  goalOrder={goalOrder}
+                  onReorderGoals={reorderGoals}
+                  todayZmanim={todayZmanim ?? undefined}
+                  onDoubleClickDate={(d) => { calendar.setDateAndView(d, "day"); }}
+                  onRenameGoal={renameGoal}
+                />
+              ) : null}
+              {calendar.view === "day" ? (
+                <DayFocus
+                  date={calendar.selectedDate}
+                  relativeLabel={relativeLabel}
                   goals={goals}
                   dayAssignments={plannerDayAssignments}
-                  selectedDate={calendar.selectedDate}
-                  view={calendar.view === "month" ? "month" : "week"}
-                  weekStartsOn={preferences.weekStartsOn}
-                  filter={trayFilter}
-                  onRenameGoal={renameGoal}
+                  metadata={metadataByDate.get(toIsoDate(calendar.selectedDate))}
                   onToggleDate={toggleDate}
+                  onToggleAssignment={toggleAssignment}
+                  onRemoveAssignment={unassign}
+                  onUnscheduleAssignment={unscheduleAssignment}
+                  onAddTask={addTask}
+                  onNavigateToDate={(d) => { calendar.setDateAndView(d, "day"); }}
+                  zmanim={dayZmanim ?? undefined}
+                  timeFormat={preferences.timeFormat}
+                  timelineSnapMins={preferences.timelineSnapMins}
+                  timelineDefaultDurationMins={preferences.timelineDefaultDurationMins}
+                  onTimelinePreferenceChange={(key, value) => updatePreference(key, value as never)}
+                  onSetDuration={setDuration}
+                  goalOrder={goalOrder}
+                  onReorderGoals={reorderGoals}
+                  onRenameGoal={renameGoal}
                 />
+              ) : null}
+            </div>
+
+            {/* Side drawer — slides in from the right */}
+            <div className={cn(
+              "shrink-0 overflow-hidden transition-all duration-300 ease-in-out",
+              trayOpen ? "w-72" : "w-0",
+            )}>
+              <div className="flex w-72 flex-col rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+                <div className="flex items-center px-4 py-3">
+                  <span className="flex min-w-0 flex-1 items-center gap-2 text-[13px] font-semibold text-slate-700">
+                    Goal Library
+                    {goalLibraryCount > 0 && (
+                      <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[10px] font-bold text-brand">{goalLibraryCount}</span>
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { setTrayOpen(false); localStorage.setItem("goal-tray-open", "false"); }}
+                    className="rounded-md p-1 text-slate-400 transition-colors hover:text-slate-600"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                      <path d="M1 1L11 11M11 1L1 11" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+                    </svg>
+                  </button>
+                </div>
+                <div className="overflow-y-auto border-t border-slate-100 px-4 pb-4 pt-3" style={{ maxHeight: "calc(100vh - 12rem)" }}>
+                  <DrawerGoalTray
+                    goals={goals}
+                    dayAssignments={plannerDayAssignments}
+                    selectedDate={calendar.selectedDate}
+                    view={calendar.view === "month" ? "month" : "week"}
+                    weekStartsOn={preferences.weekStartsOn}
+                    onRenameGoal={renameGoal}
+                  />
+                </div>
               </div>
-            )}
-          </div>
-          <div className={cn(
-            "rounded-2xl border border-slate-200/80 bg-white shadow-sm",
-            calendar.view === "day"
-              ? "p-4"
-              : calendar.view === "week"
-                ? "p-3 md:p-4"
-                : "p-4 md:p-5",
-          )}>
-            {calendar.view === "month" ? (
-              <MonthGrid
-                month={month}
-                onSelectDate={(d) => { calendar.setSelectedDate(d); setSidePanelDate(d); }}
-                onDoubleClickDate={(d) => { calendar.setDateAndView(d, "day"); }}
-                showOutsideMonthDays={preferences.showOutsideMonthDays}
-                weekStartsOn={preferences.weekStartsOn}
-              />
-            ) : null}
-            {calendar.view === "week" ? (
-              <WeekGrid
-                week={week}
-                goals={goals}
-                excludedByGoal={excludedByGoal}
-                onToggleDate={toggleDate}
-                planMode={trayOpen}
-                dayAssignments={plannerDayAssignments}
-                onToggleAssignment={toggleAssignment}
-                onRemoveAssignment={unassign}
-                onAddTask={addTask}
-                weekStartsOn={preferences.weekStartsOn}
-                goalOrder={goalOrder}
-                onReorderGoals={reorderGoals}
-                todayZmanim={todayZmanim ?? undefined}
-                onDoubleClickDate={(d) => { calendar.setDateAndView(d, "day"); }}
-                onRenameGoal={renameGoal}
-              />
-            ) : null}
-            {calendar.view === "day" ? (
-              <DayFocus
-                date={calendar.selectedDate}
-                relativeLabel={relativeLabel}
-                goals={goals}
-                dayAssignments={plannerDayAssignments}
-                excludedByGoal={excludedByGoal}
-                metadata={metadataByDate.get(toIsoDate(calendar.selectedDate))}
-                onToggleDate={toggleDate}
-                onToggleAssignment={toggleAssignment}
-                onRemoveAssignment={unassign}
-                onUnscheduleAssignment={unscheduleAssignment}
-                onAddTask={addTask}
-                onSetScheduledTime={setScheduledTime}
-                onNavigateToDate={(d) => { calendar.setDateAndView(d, "day"); }}
-                zmanim={dayZmanim ?? undefined}
-                timeFormat={preferences.timeFormat}
-                timelineSnapMins={preferences.timelineSnapMins}
-                timelineDefaultDurationMins={preferences.timelineDefaultDurationMins}
-                onTimelinePreferenceChange={(key, value) => updatePreference(key, value as never)}
-                onSetDuration={setDuration}
-                goalOrder={goalOrder}
-                onReorderGoals={reorderGoals}
-                onRenameGoal={renameGoal}
-              />
-            ) : null}
+            </div>
           </div>
 
           {/* Cap-blocked dialog */}
@@ -889,6 +869,7 @@ export function CalendarWorkspace({
                   dayLabel={day.date.toLocaleDateString("en-US", { weekday: "long" })}
                   defaultAmount={amountPrompt.suggestedAmount}
                   maxAmount={amountPrompt.maxAmount}
+                  actionLabel="Plan"
                   onConfirm={confirmAmountPrompt}
                   onCancel={clearPending}
                 />
@@ -905,6 +886,7 @@ export function CalendarWorkspace({
                   dayLabel={amountPrompt.date}
                   defaultAmount={amountPrompt.defaultAmount}
                   maxAmount={completionAssignment?.targetAmount ?? amountPrompt.defaultAmount}
+                  actionLabel="Complete"
                   onConfirm={confirmAmountPrompt}
                   onCancel={clearPending}
                 />
@@ -918,6 +900,7 @@ export function CalendarWorkspace({
                 goal={goal}
                 dayLabel={amountPrompt.isoDate}
                 defaultAmount={amountPrompt.defaultAmount}
+                actionLabel="Complete"
                 onConfirm={confirmAmountPrompt}
                 onCancel={clearPending}
               />
@@ -927,7 +910,11 @@ export function CalendarWorkspace({
           {/* DragOverlay renders in a portal at body root — escapes all overflow containers */}
           <DragOverlay dropAnimation={null} modifiers={[overlayNearPointerModifier]}>
             {activeGoalId ? (() => {
-              const goalId = getGoalIdFromDragId(activeGoalId);
+              const assignmentId = getAssignmentIdFromDragId(activeGoalId);
+              const assignment = assignmentId
+                ? plannerDayAssignments.find((entry) => entry.id === assignmentId)
+                : null;
+              const goalId = assignment?.goalId ?? getGoalIdFromDragId(activeGoalId);
               const g = goalId ? goals.find((gl) => gl.id === goalId) : null;
               if (!g) return null;
               return (
@@ -955,7 +942,6 @@ export function CalendarWorkspace({
             metadata={metadataByDate.get(toIsoDate(sidePanelDate))}
             goals={goals}
             dayAssignments={plannerDayAssignments}
-            excludedByGoal={excludedByGoal}
             onToggleAssignment={toggleAssignment}
             onToggleDate={toggleDate}
             goalOrder={goalOrder}

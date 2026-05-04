@@ -53,11 +53,24 @@ export function saveScopedJson<T>({
   if (typeof window === "undefined") return false;
   try {
     purgeLegacyPlannerStorage();
-    localStorage.setItem(buildScopedStorageKey(baseKey, storageScope), JSON.stringify(value));
+    const key = buildScopedStorageKey(baseKey, storageScope);
+    const nextValue = JSON.stringify(value);
+    if (localStorage.getItem(key) === nextValue) return false;
+    localStorage.setItem(key, nextValue);
     return true;
   } catch {
     return false;
   }
+}
+
+export function dispatchScopedStorageEvent<T>(eventName: string, detail: T): void {
+  if (typeof window === "undefined") return;
+
+  const dispatch = () => {
+    window.dispatchEvent(new CustomEvent<T>(eventName, { detail }));
+  };
+
+  window.setTimeout(dispatch, 0);
 }
 
 export function clearScopedJson({

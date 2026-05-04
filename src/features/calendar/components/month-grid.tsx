@@ -1,8 +1,8 @@
 import { useRef } from "react";
 import { cn } from "@/lib/cn";
 import type { CalendarMonth } from "@/features/calendar/types/calendar";
-import { CalendarMetaPills, buildCalendarMetaPills } from "@/components/planner/calendar-meta-pills";
-import { SegmentedProgressBar } from "@/components/planner/segmented-progress-bar";
+import { CalendarMetaPills, buildCalendarMetaPills } from "@/features/planner/components/calendar-meta-pills";
+import { SegmentedProgressBar } from "@/features/planner/components/segmented-progress-bar";
 
 const WEEKDAY_LABELS_FROM_SUN = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 

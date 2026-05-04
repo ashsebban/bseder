@@ -3,7 +3,6 @@ import { db } from "@/lib/db";
 import { requireAuth } from "@/lib/require-auth";
 import { ApiRouteError, readJsonBody, withApiHandler } from "@/lib/api-route";
 import { isoToUtcDate } from "@/lib/date";
-import { syncSetWithSoftDelete } from "@/lib/sync-set";
 import type { Goal } from "@/features/goals/types/goal";
 import {
   goalToDbCreate,
@@ -12,6 +11,9 @@ import {
   individualExclusionKeys,
 } from "@/features/goals/lib/goal-db-transform";
 
+// ─── What we join when loading goals ─────────────────────────────────────────
+// Goals are now pure rules — no completion state here.
+// Completion state lives in Assignment rows, fetched separately by the planner.
 const GOAL_INCLUDE = {
   activeDays: true,
   exclusions: true,
@@ -19,11 +21,12 @@ const GOAL_INCLUDE = {
   assignments: { where: { completed: true, deletedAt: null as null } },
 } as const;
 
+// ─── GET /api/goals ───────────────────────────────────────────────────────────
 export const GET = withApiHandler(async () => {
   const { user: currentUser } = await requireAuth();
   const userId = currentUser.id;
 
-  const records = await db.goalRecord.findMany({
+  const records = await db.goal.findMany({
     where: { userId, deletedAt: null },
     include: GOAL_INCLUDE,
     orderBy: { createdAt: "asc" },
@@ -33,6 +36,8 @@ export const GET = withApiHandler(async () => {
   return NextResponse.json({ goals });
 }, { label: "api/goals GET" });
 
+// ─── PUT /api/goals ───────────────────────────────────────────────────────────
+// Full replace: syncs all of the user's goals from the client snapshot.
 export const PUT = withApiHandler(async (request: Request) => {
   const { user: currentUser } = await requireAuth();
   const raw = await readJsonBody(request);
@@ -51,81 +56,81 @@ export const PUT = withApiHandler(async (request: Request) => {
   const incomingIds = new Set(goals.map((g) => g.id));
 
   await db.$transaction(async (tx) => {
-    // Soft-delete goals no longer in the list
-    await tx.goalRecord.updateMany({
+    // Soft-delete goals no longer in the incoming list
+    await tx.goal.updateMany({
       where: { userId, deletedAt: null, id: { notIn: [...incomingIds] } },
       data: { deletedAt: new Date() },
     });
 
     for (const goal of goals) {
-      const existing = await tx.goalRecord.findUnique({ where: { id: goal.id } });
+      const existing = await tx.goal.findUnique({ where: { id: goal.id } });
+      const data = goalToDbCreate(goal, userId);
 
       if (!existing) {
-        // Create new goal row
-        const data = goalToDbCreate(goal, userId);
-        await tx.goalRecord.create({ data });
+        await tx.goal.create({ data });
       } else {
-        // Update scalar fields
-        const data = goalToDbCreate(goal, userId);
-        // Strip the nested relation connect — update only scalars
-        await tx.goalRecord.update({
+        // Update scalar fields only (relations handled below)
+        await tx.goal.update({
           where: { id: goal.id },
           data: {
             title: data.title,
             cadence: data.cadence,
             status: data.status,
-            type: data.type,
+            measure: data.measure,
+            source: data.source,
+            presetId: data.presetId,
+            dayModel: data.dayModel,
             target: data.target,
             targetUnit: data.targetUnit,
-            backlog: data.backlog,
+            totalTarget: data.totalTarget,
+            failureMode: data.failureMode,
+            carryover: data.carryover,
             noGettingAhead: data.noGettingAhead,
-            ifUnfinished: data.ifUnfinished,
-            preferredMonthDay: data.preferredMonthDay,
-            lockInDays: data.lockInDays,
-            adhoc: data.adhoc,
             startsAt: data.startsAt,
             expiresAt: data.expiresAt,
+            preferredMonthDay: data.preferredMonthDay,
+            lockInDays: data.lockInDays,
             startDate: data.startDate,
             endDate: data.endDate,
             dueDate: data.dueDate,
             endAfterPeriods: data.endAfterPeriods,
             programKey: data.programKey,
-            excludesCategories: data.excludesCategories,
             deletedAt: null, // restore if previously soft-deleted
           },
         });
       }
 
-      // Replace active days
-      await tx.goalActiveDayRecord.deleteMany({ where: { goalId: goal.id } });
+      // ── Active days ────────────────────────────────────────────────────────
+      await tx.goalActiveDay.deleteMany({ where: { goalId: goal.id } });
       const dayIndices = activeDayIndices(goal);
       if (dayIndices.length > 0) {
-        await tx.goalActiveDayRecord.createMany({
+        await tx.goalActiveDay.createMany({
           data: dayIndices.map((dayOfWeek) => ({ goalId: goal.id, dayOfWeek })),
         });
       }
 
-      // Replace individual exclusions
-      await tx.goalExclusionRecord.deleteMany({ where: { goalId: goal.id } });
+      // ── Exclusions ─────────────────────────────────────────────────────────
+      await tx.goalExclusion.deleteMany({ where: { goalId: goal.id } });
       const exclusionKeys = individualExclusionKeys(goal);
       if (exclusionKeys.length > 0) {
-        await tx.goalExclusionRecord.createMany({
+        await tx.goalExclusion.createMany({
           data: exclusionKeys.map((holidayKey) => ({ goalId: goal.id, holidayKey })),
         });
       }
 
-      // Sync milestones
+      // ── Milestones ─────────────────────────────────────────────────────────
       if (goal.milestones && goal.milestones.length > 0) {
         for (const [sortOrder, milestone] of goal.milestones.entries()) {
-          const milestoneExists = await tx.goalMilestoneRecord.findUnique({
+          const milestoneExists = await tx.goalMilestone.findUnique({
             where: { id: milestone.id },
           });
-          const completedAt = milestone.completedDate
-            ? new Date(`${milestone.completedDate}T00:00:00.000Z`)
+          // completedAt is an ISO datetime string on the new Milestone type
+          const completedAt = milestone.completedAt
+            ? new Date(milestone.completedAt)
             : null;
 
           if (!milestoneExists) {
-            await tx.goalMilestoneRecord.create({
+            await tx.goalMilestone.create({
               data: {
                 id: milestone.id,
                 goalId: goal.id,
@@ -136,7 +141,7 @@ export const PUT = withApiHandler(async (request: Request) => {
               },
             });
           } else {
-            await tx.goalMilestoneRecord.update({
+            await tx.goalMilestone.update({
               where: { id: milestone.id },
               data: {
                 label: milestone.label,
@@ -150,32 +155,10 @@ export const PUT = withApiHandler(async (request: Request) => {
         }
       }
 
-      // Sync completedDates (binary daily goals only)
-      if (goal.cadence === "daily" && goal.type === "binary" && Array.isArray(goal.completedDates)) {
-        const existingCompleted = await tx.assignmentRecord.findMany({
-          where: { goalId: goal.id, userId, completed: true, deletedAt: null },
-          select: { id: true, date: true },
-        });
-
-        await syncSetWithSoftDelete({
-          existing: existingCompleted,
-          incoming: goal.completedDates,
-          match: (e, i) => {
-            const d = e.date;
-            const iso = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
-            return iso === i;
-          },
-          softDelete: async (e) => {
-            await tx.assignmentRecord.update({ where: { id: e.id }, data: { deletedAt: new Date() } });
-          },
-          create: async (iso) => {
-            const utcDate = isoToUtcDate(iso);
-            await tx.assignmentRecord.create({
-              data: { goalId: goal.id, userId, date: utcDate, completed: true, completedAt: utcDate },
-            });
-          },
-        });
-      }
+      // NOTE: Completion state is no longer synced here.
+      // In v1, completedDates lived on the goal and were synced to assignment rows.
+      // In v2, completions are written directly by the planner via /api/assignments.
+      // The assignment is the source of truth — the goal knows nothing about it.
     }
   }, { maxWait: 10_000, timeout: 20_000 });
 

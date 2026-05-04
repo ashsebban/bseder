@@ -5,12 +5,11 @@ import {
   endOfWeek,
   formatMonthLabel,
   formatWeekRangeLabel,
-  getRelativeDayLabel,
   isSameDay,
   startOfMonth,
   startOfWeek,
   toIsoDate,
-} from "@/features/calendar/lib/date";
+} from "@/lib/date";
 
 function createDay(
   date: Date,
@@ -84,19 +83,19 @@ export function buildWeekView(
   };
 }
 
-export function getViewTitle(view: CalendarView, selectedDate: Date, anchorDate: Date, today: Date, weekStartsOn: 0 | 1 = 0) {
+export function getViewTitle(view: CalendarView, selectedDate: Date, anchorDate: Date, weekStartsOn: 0 | 1 = 0) {
   switch (view) {
     case "month":
       return {
         eyebrow: "Monthly View",
         title: formatMonthLabel(anchorDate),
-        subtitle: "Select a location to add Friday candle-lighting and Saturday Shabbos times to the month.",
+        subtitle: "",
       };
     case "week":
       return {
         eyebrow: "Weekly View",
         title: formatWeekRangeLabel(startOfWeek(selectedDate, weekStartsOn), endOfWeek(selectedDate, weekStartsOn)),
-        subtitle: `${getRelativeDayLabel(selectedDate, today)} remains the active planning day.`,
+        subtitle: "",
       };
     case "day":
       return {
@@ -107,7 +106,7 @@ export function getViewTitle(view: CalendarView, selectedDate: Date, anchorDate:
           day: "numeric",
           year: "numeric",
         }),
-        subtitle: "This is the smallest planning unit and the natural home for future tasks, goals, reminders, and notes.",
+        subtitle: "",
       };
   }
 }

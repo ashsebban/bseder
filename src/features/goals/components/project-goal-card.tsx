@@ -139,6 +139,8 @@ export function ProjectGoalCard({
 
   const cadenceLabels: Record<GoalCadence, string> = {
     "one-time": "One-time",
+    project: "Project",
+    seasonal: "Seasonal",
     yearly: "Yearly",
     monthly: "Monthly",
     weekly: "Weekly",

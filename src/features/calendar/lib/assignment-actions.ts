@@ -71,6 +71,7 @@ export function applyQuantifiedAssignmentCompletion({
     id: createId(),
     goalId: original.goalId,
     date: original.date,
+    occurrenceDate: original.occurrenceDate,
     completed: false,
     targetAmount: remainingAmount,
     periodKey: original.periodKey,

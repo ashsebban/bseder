@@ -1,12 +1,12 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
-import { useDroppable, useDraggable } from "@dnd-kit/core";
-import { X } from "lucide-react";
+import { useDroppable, useDraggable, useDndMonitor } from "@dnd-kit/core";
 import { cn } from "@/lib/cn";
 import { Checkbox } from "@/components/ui/checkbox";
 import { todayIso } from "@/lib/date";
-import { DailyBacklogBadge } from "@/components/planner/daily-backlog-badge";
+import { getGoalOriginLabel } from "@/features/goals/components/goal-origin-pill";
+import { OccurrenceItem } from "@/features/planner/components/occurrence-item";
 import { suggestedAssignmentAmount } from "@/features/calendar/lib/assignment-actions";
 import {
   buildGoalOccurrencesForDate,
@@ -19,18 +19,16 @@ import { isPrebuiltGoal } from "@/features/goals/lib/prebuilt-goals";
 import type { DayAssignment } from "@/features/planner/lib/day-assignment-store";
 import { EditableGoalTitle, GoalListRow } from "@/features/calendar/components/goal-list-row";
 import type { DayZmanim } from "@/features/calendar/lib/zmanim";
-import { getGoalTimeStateForNow } from "@/features/calendar/lib/goal-time-window";
-import { CalendarMetaPills, buildCalendarMetaPills } from "@/components/planner/calendar-meta-pills";
-import { CompletionCount } from "@/components/planner/completion-status";
-import { FutureDateConfirmationModal } from "@/components/planner/future-date-confirmation-modal";
-import { InlineAddTask, TaskListEmptyState } from "@/components/planner/inline-add-task";
-import { ReorderGrip } from "@/components/planner/reorder-grip";
+import { CalendarMetaPills, buildCalendarMetaPills } from "@/features/planner/components/calendar-meta-pills";
+import { CompletionCount } from "@/features/planner/components/completion-status";
+import { FutureDateConfirmationModal } from "@/features/planner/components/future-date-confirmation-modal";
+import { InlineAddTask, TaskListEmptyState } from "@/features/planner/components/inline-add-task";
+import { ReorderGrip } from "@/features/planner/components/reorder-grip";
 import { getDailyBacklogEntries, type DailyBacklogEntry } from "@/features/goals/lib/daily-backlog";
 
 interface WeekGridProps {
   week: CalendarWeek;
   goals: Goal[];
-  excludedByGoal: Map<string, Set<string>>;
   onToggleDate: (goalId: string, isoDate: string) => void;
   planMode?: boolean;
   dayAssignments?: DayAssignment[];
@@ -46,6 +44,41 @@ interface WeekGridProps {
 }
 
 const WEEKDAY_LABELS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+
+const WEEK_TITLE_PILL_CLASSES = {
+  preset: "bg-brand-soft text-brand",
+  edited: "bg-amber-100 text-amber-700",
+  custom: "bg-surface-muted text-text-muted",
+  task: "bg-slate-100 text-slate-600",
+} as const;
+
+function WeekGoalTitlePill({
+  goal,
+  completed,
+  draggable = false,
+  onRenameGoal,
+}: {
+  goal: Goal;
+  completed: boolean;
+  draggable?: boolean;
+  onRenameGoal: (goalId: string, nextTitle: string) => void;
+}) {
+  const origin = getGoalOriginLabel(goal);
+
+  return (
+    <EditableGoalTitle
+      title={goal.title}
+      onRename={isPrebuiltGoal(goal.id) ? undefined : (nextTitle) => onRenameGoal(goal.id, nextTitle)}
+      className={cn(
+        "!inline-flex !w-auto min-w-0 max-w-full overflow-hidden rounded-full px-2 py-0.5 text-[12px] font-semibold leading-tight transition-colors",
+        WEEK_TITLE_PILL_CLASSES[origin.tone],
+        draggable && "cursor-grab select-none active:cursor-grabbing",
+        completed && "opacity-65 line-through decoration-current/40",
+      )}
+      inputClassName="text-[12px] font-medium"
+    />
+  );
+}
 
 
 /** Auto-scheduled weekly goal — draggable to another day unless locked. */
@@ -79,6 +112,7 @@ function DraggableWeeklyTaskItem({
   return (
     <GoalListRow
       density="compact"
+      align="start"
       rowRef={setNodeRef}
       rootProps={!locked ? { ...listeners, ...attributes } : undefined}
       style={dragStyle}
@@ -105,17 +139,13 @@ function DraggableWeeklyTaskItem({
             uncheckedClassName="border-slate-400 hover:border-slate-500"
           />
         }
-        content={(
-          <div className="flex min-w-0 items-center gap-2">
-            <EditableGoalTitle
-              title={goal.title}
-              onRename={isPrebuiltGoal(goal.id) ? undefined : (nextTitle) => onRenameGoal(goal.id, nextTitle)}
-              className={cn(
-                "min-w-0 flex-1 truncate text-[12px] font-medium leading-tight text-slate-800 transition-colors",
-                !locked && "cursor-grab select-none active:cursor-grabbing",
-                isDone && "text-slate-400 line-through decoration-slate-300",
-              )}
-              inputClassName="text-[12px] font-medium"
+      content={(
+          <div className="flex min-w-0 items-start gap-2">
+            <WeekGoalTitlePill
+              goal={goal}
+              completed={isDone}
+              draggable={!locked}
+              onRenameGoal={onRenameGoal}
             />
             {displayAmount > 0 ? (
               <span
@@ -129,10 +159,6 @@ function DraggableWeeklyTaskItem({
         )}
     />
   );
-}
-
-function weekGoalTimeExpired(goal: Goal, zmanim: DayZmanim | undefined, isToday: boolean): boolean {
-  return getGoalTimeStateForNow(goal, zmanim, isToday, new Date()) === "expired";
 }
 
 function SortableWeekGoalItem({
@@ -160,14 +186,6 @@ function SortableWeekGoalItem({
   onRenameGoal: (goalId: string, nextTitle: string) => void;
   backlogEntriesByGoal: Map<string, DailyBacklogEntry[]>;
 }) {
-  // useDraggable called unconditionally (rules of hooks) — disabled for non-assigned items or locked goals
-  const assignId = item.source === "assignment"
-    ? (item.collapsed ? item.actionId : `assignment:${item.assignment.id}`)
-    : `noop:${item.goal.id}`;
-  const assignedAndMoveable = item.source === "assignment" && !item.goal.lockInDays;
-  const { attributes, listeners, setNodeRef: aRef, isDragging: aIsDragging, transform: aXform } =
-    useDraggable({ id: assignId, disabled: !assignedAndMoveable });
-
   if (item.source === "auto" && item.autoKind === "weekly") {
     return (
       <DraggableWeeklyTaskItem
@@ -181,152 +199,25 @@ function SortableWeekGoalItem({
     );
   }
 
-  const assignDragStyle = aXform
-    ? { transform: `translate3d(${aXform.x}px, ${aXform.y}px, 0)`, zIndex: 999 }
-    : undefined;
-
-  if (item.source === "assignment") {
-    const assignment = item.assignment;
-    const goal = item.goal;
-    return (
-      <GoalListRow
-        density="compact"
-        rowRef={aRef}
-        rootProps={assignedAndMoveable ? { ...listeners, ...attributes } : undefined}
-        style={assignDragStyle}
-        className={cn(
-          aIsDragging && "opacity-50",
-        )}
-        leading={(
-          <ReorderGrip
-            itemId={goal.id}
-            itemIds={allIds}
-            onReorder={onReorderGoals}
-            rowStepPx={28}
-            iconWidth={6}
-            iconHeight={10}
-            className="mt-[2px] text-slate-200 hover:text-slate-400"
-          />
-        )}
-        checkbox={(
-          <Checkbox
-            checked={assignment.completed}
-            onChange={() => onToggleAssignment(item.actionId)}
-            size="sm"
-            uncheckedClassName="border-slate-400 hover:border-slate-500"
-          />
-        )}
-        content={(
-          <div className="min-w-0">
-            <div className="flex min-w-0 items-center gap-2">
-              <EditableGoalTitle
-                title={goal.title}
-                onRename={isPrebuiltGoal(goal.id) ? undefined : (nextTitle) => onRenameGoal(goal.id, nextTitle)}
-                className={cn(
-                  "min-w-0 flex-1 truncate text-[12px] font-medium leading-tight text-slate-800 select-none transition-colors",
-                  assignedAndMoveable && "cursor-grab",
-                  assignment.completed && "text-slate-400 line-through decoration-slate-300",
-                )}
-                inputClassName="text-[12px] font-medium"
-              />
-              <DailyBacklogBadge
-                goalTitle={goal.title}
-                entries={backlogEntriesByGoal.get(goal.id) ?? []}
-                onResolveDate={(isoDate) => onToggleDate(goal.id, isoDate)}
-                compact
-              />
-              {goal.type === "quantified" && item.displayAmount > 0 ? (
-                <span
-                  className="shrink-0 text-[10px] font-medium tracking-tight text-brand/75"
-                  title={`${item.displayAmount} ${goal.targetUnit ?? "units"}`}
-                >
-                  · {item.displayAmount}
-                </span>
-              ) : null}
-            </div>
-            {item.programLabel ? (
-              <p className="mt-0.5 truncate text-[10px] leading-tight text-slate-400">
-                {item.programLabel}
-              </p>
-            ) : null}
-          </div>
-        )}
-        trailing={goal.lockInDays ? undefined : (
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onRemoveAssignment(item.actionId); }}
-              onPointerDown={(e) => e.stopPropagation()}
-              className="rounded-full p-0.5 text-slate-300 opacity-0 transition hover:text-red-400 group-hover:opacity-100"
-            >
-              <X className="h-2.5 w-2.5" strokeWidth={2.5} />
-            </button>
-          </div>
-        )}
-      />
-    );
-  }
-
-  // Daily goal
-  const isDone = item.completed;
-  const isExpired = weekGoalTimeExpired(item.goal, zmanim, isToday);
   return (
-    <GoalListRow
+    <OccurrenceItem
+      item={item}
       density="compact"
-      className={cn("hover:bg-slate-50", !isDone && isExpired && "opacity-50")}
-      leading={(
-        <ReorderGrip
-          itemId={item.goal.id}
-          itemIds={allIds}
-          onReorder={onReorderGoals}
-          rowStepPx={28}
-          iconWidth={6}
-          iconHeight={10}
-          className="text-slate-200 hover:text-slate-400"
-        />
-      )}
-      checkbox={(
-        <Checkbox
-          checked={isDone}
-          onChange={() => onToggleDate(item.goal.id, isoDate)}
-          size="sm"
-          uncheckedClassName="border-slate-400 hover:border-slate-500"
-        />
-      )}
-      content={(
-        <div className="min-w-0">
-          <div className="flex min-w-0 items-center gap-2">
-            <EditableGoalTitle
-              title={item.goal.title}
-              onRename={(nextTitle) => onRenameGoal(item.goal.id, nextTitle)}
-              className={cn(
-                "min-w-0 flex-1 truncate text-[12px] font-medium leading-tight text-slate-800 transition-colors",
-                isDone && "text-slate-400 line-through decoration-slate-300",
-              )}
-              inputClassName="text-[12px] font-medium"
-            />
-            <DailyBacklogBadge
-              goalTitle={item.goal.title}
-              entries={backlogEntriesByGoal.get(item.goal.id) ?? []}
-              onResolveDate={(isoDate) => onToggleDate(item.goal.id, isoDate)}
-              compact
-            />
-            {item.displayAmount > 0 ? (
-              <span
-                className="shrink-0 text-[10px] font-medium tracking-tight text-brand/75"
-                title={`${item.displayAmount} ${item.goal.targetUnit ?? "units"}`}
-              >
-                · {item.displayAmount}
-              </span>
-            ) : null}
-          </div>
-          {item.programLabel ? (
-            <p className="mt-0.5 truncate text-[10px] leading-tight text-slate-400">
-              {item.programLabel}
-            </p>
-          ) : null}
-        </div>
-      )}
+      isToday={isToday}
+      now={new Date()}
+      zmanim={zmanim}
+      onToggle={
+        item.source === "auto"
+          ? () => onToggleDate(item.goal.id, item.occurrenceDate)
+          : () => onToggleAssignment(item.actionId)
+      }
+      onRemove={item.source === "assignment" ? () => onRemoveAssignment(item.actionId) : undefined}
+      onRenameGoal={onRenameGoal}
+      backlogEntries={backlogEntriesByGoal.get(item.goal.id) ?? []}
+      onResolveBacklogDate={(goalId, date) => onToggleDate(goalId, date)}
+      enableDrag={item.source === "assignment"}
+      allIds={allIds}
+      onReorderGoals={onReorderGoals}
     />
   );
 }
@@ -334,7 +225,6 @@ function SortableWeekGoalItem({
 function DayColumn({
   day,
   goals,
-  excludedByGoal,
   onToggleDate,
   planMode,
   occurrences,
@@ -349,7 +239,6 @@ function DayColumn({
 }: {
   day: CalendarDay;
   goals: Goal[];
-  excludedByGoal: Map<string, Set<string>>;
   onToggleDate: (goalId: string, isoDate: string) => void;
   planMode: boolean;
   occurrences: GoalOccurrence[];
@@ -366,23 +255,31 @@ function DayColumn({
   useEffect(() => { setMounted(true); }, []);
 
   const [pendingToggle, setPendingToggle] = useState<
-    | { type: "date"; goalId: string }
+    | { type: "date"; goalId: string; date: string }
     | { type: "assignment"; assignmentId: string }
     | null
   >(null);
   const { setNodeRef, isOver } = useDroppable({ id: day.iso });
+
+  const [activeDragId, setActiveDragId] = useState<string | null>(null);
+  useDndMonitor({
+    onDragStart: (event) => setActiveDragId(event.active.id as string),
+    onDragEnd: () => setActiveDragId(null),
+    onDragCancel: () => setActiveDragId(null),
+  });
 
   const meta = day.metadata;
   const isoDate = day.iso;
   const todayIsoStr = todayIso();
   const dayIsFuture = isoDate > todayIsoStr;
   const isToday = isoDate === todayIsoStr;
+  const isIdealDropZone = isOver;
 
   function handleToggleDateMaybeConfirm(goalId: string, date: string) {
     const goal = goals.find((g) => g.id === goalId);
     const alreadyDone = goal?.completedDates?.includes(date) ?? false;
     if (dayIsFuture && !alreadyDone) {
-      setPendingToggle({ type: "date", goalId });
+      setPendingToggle({ type: "date", goalId, date });
     } else {
       onToggleDate(goalId, date);
     }
@@ -428,7 +325,7 @@ function DayColumn({
         day.isToday
           ? "border-brand/30 bg-white shadow-[0_2px_14px_rgba(0,0,0,0.07)]"
           : "border-slate-200/70 bg-white shadow-[0_1px_3px_rgba(0,0,0,0.04)]",
-        isOver && "border-brand/50 bg-brand/[0.03] shadow-[0_0_0_2px_rgba(99,102,241,0.15)]",
+        isIdealDropZone && "border-brand/50 bg-brand/[0.03] shadow-[0_0_0_2px_rgba(99,102,241,0.15)]",
       )}
     >
       {/* Header */}
@@ -496,7 +393,7 @@ function DayColumn({
           <TaskListEmptyState
             message="Drop here"
             variant="dropzone"
-            active={isOver}
+            active={isIdealDropZone}
           />
         )}
 
@@ -519,7 +416,7 @@ function DayColumn({
           onCancel={() => setPendingToggle(null)}
           onConfirm={() => {
             if (pendingToggle.type === "date") {
-              onToggleDate(pendingToggle.goalId, isoDate);
+              onToggleDate(pendingToggle.goalId, pendingToggle.date);
             } else {
               onToggleAssignment(pendingToggle.assignmentId);
             }
@@ -534,7 +431,6 @@ function DayColumn({
 export function WeekGrid({
   week,
   goals,
-  excludedByGoal,
   onToggleDate,
   planMode = false,
   dayAssignments = [],
@@ -562,7 +458,6 @@ export function WeekGrid({
               date: day.date,
               goals,
               dayAssignments,
-              excludedByGoal,
             }),
             goalOrder,
           );
@@ -572,7 +467,6 @@ export function WeekGrid({
               key={day.iso}
               day={day}
               goals={goals}
-              excludedByGoal={excludedByGoal}
               onToggleDate={onToggleDate}
               planMode={planMode}
               occurrences={occurrences}

@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { clearScopedJson, loadScopedJsonArray, saveScopedJson } from "../../../lib/scoped-storage-store";
+import {
+  clearScopedJson,
+  dispatchScopedStorageEvent,
+  loadScopedJsonArray,
+  saveScopedJson,
+} from "../../../lib/scoped-storage-store";
 
 const KEY = "steinberg_goal_order.v1";
 const GoalOrderSchema = z.array(z.string());
@@ -12,10 +17,10 @@ export interface GoalOrderStorageUpdatedDetail {
 }
 
 function dispatchGoalOrderStorageUpdated(storageScope: string, order: string[]) {
-  if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent<GoalOrderStorageUpdatedDetail>(GOAL_ORDER_STORAGE_UPDATED_EVENT, {
-    detail: { storageScope, order },
-  }));
+  dispatchScopedStorageEvent<GoalOrderStorageUpdatedDetail>(
+    GOAL_ORDER_STORAGE_UPDATED_EVENT,
+    { storageScope, order },
+  );
 }
 
 export function loadGoalOrder(storageScope: string): string[] {

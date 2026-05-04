@@ -10,10 +10,15 @@ import { SegmentedTabs } from "@/components/ui/tabs";
 import { Card } from "@/components/ui/card";
 import { updateProfile, changePassword, deleteAccount } from "@/features/settings/actions/settings-actions";
 import { CalendarPreferencesEditor } from "@/features/settings/components/calendar-preferences-editor";
+import { MyJudaismEditor } from "@/features/settings/components/my-judaism-editor";
+import { GoalsPreferencesEditor } from "@/features/settings/components/goals-preferences-editor";
 import { useSyncedCalendarPreferences } from "@/features/settings/hooks/use-synced-calendar-preferences";
 import { cn } from "@/lib/cn";
 import type { CalendarPreferences } from "@/features/settings/types/calendar-preferences";
 import { clearScopedPlannerStorage } from "@/lib/user-scoped-browser-storage";
+
+const TABS = ["Account", "My Judaism", "Calendar", "Goals", "Security", "Other"] as const;
+type Tab = (typeof TABS)[number];
 
 interface Props {
   user: {
@@ -27,10 +32,8 @@ interface Props {
   hasGoogleAccount: boolean;
   hasPassword: boolean;
   storageScope: string;
+  initialTab?: string;
 }
-
-const TABS = ["Profile", "Calendar", "Security", "Account"] as const;
-type Tab = (typeof TABS)[number];
 
 export function SettingsClient({
   user,
@@ -38,8 +41,16 @@ export function SettingsClient({
   hasGoogleAccount,
   hasPassword,
   storageScope,
+  initialTab,
 }: Props) {
-  const [tab, setTab] = useState<Tab>("Profile");
+  const [tab, setTab] = useState<Tab>(
+    TABS.find((t) => t === initialTab) ?? "Account",
+  );
+
+  const { preferences, updatePreference, resetPreferences, saveState } = useSyncedCalendarPreferences(
+    initialCalendarPreferences,
+    storageScope,
+  );
 
   return (
     <div className="space-y-6">
@@ -49,29 +60,76 @@ export function SettingsClient({
         options={TABS.map((t) => ({ label: t, value: t }))}
       />
 
-      {tab === "Profile" && <ProfileTab user={user} />}
-      {tab === "Calendar" && <CalendarTab initialPreferences={initialCalendarPreferences} storageScope={storageScope} />}
-      {tab === "Security" && <SecurityTab userEmail={user.email} hasGoogleAccount={hasGoogleAccount} hasPassword={hasPassword} />}
       {tab === "Account" && <AccountTab user={user} storageScope={storageScope} />}
+      {tab === "My Judaism" && (
+        <Card className="max-w-2xl border-line/70 p-5 shadow-soft">
+          <div className="flex items-center justify-between border-b border-line/60 pb-2">
+            <div>
+              <h3 className="text-sm font-bold text-text">My Judaism</h3>
+              <p className="mt-0.5 text-[11px] text-text-subtle">
+                Your tradition and observance level. Used for halachic defaults.
+              </p>
+            </div>
+            <SaveStateLabel saveState={saveState} />
+          </div>
+          <MyJudaismEditor preferences={preferences} onPreferenceChange={updatePreference} />
+        </Card>
+      )}
+      {tab === "Calendar" && (
+        <Card className="max-w-2xl border-line/70 p-5 shadow-soft">
+          <CalendarPreferencesEditor
+            preferences={preferences}
+            onPreferenceChange={updatePreference}
+            onReset={resetPreferences}
+            saveState={saveState}
+            variant="page"
+            subtitle="Display preferences for your calendar."
+          />
+        </Card>
+      )}
+      {tab === "Goals" && (
+        <Card className="max-w-2xl border-line/70 p-5 shadow-soft">
+          <div className="flex items-center justify-between border-b border-line/60 pb-2">
+            <div>
+              <h3 className="text-sm font-bold text-text">Goals Settings</h3>
+              <p className="mt-0.5 text-[11px] text-text-subtle">
+                How goals and date ranges are displayed.
+              </p>
+            </div>
+            <SaveStateLabel saveState={saveState} />
+          </div>
+          <GoalsPreferencesEditor preferences={preferences} onPreferenceChange={updatePreference} />
+        </Card>
+      )}
+      {tab === "Security" && (
+        <SecurityTab userEmail={user.email} hasGoogleAccount={hasGoogleAccount} hasPassword={hasPassword} />
+      )}
+      {tab === "Other" && (
+        <Card className="max-w-2xl border-line/70 p-5 shadow-soft">
+          <p className="py-6 text-center text-sm text-text-subtle">More settings coming soon.</p>
+        </Card>
+      )}
     </div>
   );
 }
 
-// ─── Profile Tab ─────────────────────────────────────────────────────────────
-function ProfileTab({ user }: { user: Props["user"] }) {
+// ─── Account Tab (merged Profile + Account) ───────────────────────────────────
+function AccountTab({ user, storageScope }: { user: Props["user"]; storageScope: string }) {
   const { update } = useSession();
   const [name, setName] = useState(user.displayName ?? "");
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
-  async function save() {
+  async function saveProfile() {
     setSaving(true);
-    setError(null);
+    setProfileError(null);
     setSuccess(false);
     const result = await updateProfile(name);
     if (result.error) {
-      setError(result.error);
+      setProfileError(result.error);
     } else {
       setSuccess(true);
       await update({ displayName: name });
@@ -79,68 +137,105 @@ function ProfileTab({ user }: { user: Props["user"] }) {
     setSaving(false);
   }
 
+  async function handleDelete() {
+    setDeleting(true);
+    const result = await deleteAccount();
+    if (result.error) {
+      setDeleting(false);
+      return;
+    }
+    clearScopedPlannerStorage(storageScope);
+    await signOut({ callbackUrl: "/auth/sign-in" });
+  }
+
   return (
     <div className="max-w-md space-y-6">
-      {/* Avatar */}
-      <div className="flex items-center gap-4">
-        <Avatar name={name || user.email} imageUrl={user.avatarUrl} size="lg" />
-        <div>
-          <p className="text-sm font-medium text-text">{name || user.email}</p>
-          <p className="text-xs text-text-subtle">
-            {user.avatarUrl ? "Profile photo from Google" : "Avatar uses your initials"}
-          </p>
+      {/* Profile */}
+      <Card className="border-line/60 p-5">
+        <h3 className="mb-4 text-sm font-semibold text-text">Profile</h3>
+        <div className="space-y-4">
+          <div className="flex items-center gap-4">
+            <Avatar name={name || user.email} imageUrl={user.avatarUrl} size="lg" />
+            <div>
+              <p className="text-sm font-medium text-text">{name || user.email}</p>
+              <p className="text-xs text-text-subtle">
+                {user.avatarUrl ? "Profile photo from Google" : "Avatar uses your initials"}
+              </p>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-text">Display name</label>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className={inputClass}
+              placeholder="Your name"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-text">Email</label>
+            <input value={user.email} readOnly className={cn(inputClass, "cursor-default opacity-60")} />
+            <p className="mt-1 text-xs text-text-subtle">Email cannot be changed here.</p>
+          </div>
+          {profileError && <p className="text-sm text-red-600">{profileError}</p>}
+          {success && <p className="text-sm text-success">Profile updated.</p>}
+          <Button onClick={saveProfile} disabled={saving}>
+            {saving ? "Saving…" : "Save changes"}
+          </Button>
         </div>
+      </Card>
+
+      {/* Subscription */}
+      <Card className="border-line/60 p-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-semibold text-text">Current plan</p>
+            <p className="text-xs text-text-subtle">Your subscription status</p>
+          </div>
+          <Badge tone={user.subscriptionStatus === "pro" ? "brand" : "neutral"}>
+            {user.subscriptionStatus === "pro" ? "Pro" : "Free"}
+          </Badge>
+        </div>
+        {user.subscriptionStatus === "free" && (
+          <Button variant="secondary" size="sm" className="mt-4 w-full" onClick={() => {}}>
+            Upgrade to Pro (coming soon)
+          </Button>
+        )}
+      </Card>
+
+      {/* Danger zone */}
+      <div className="rounded-2xl border border-red-200 p-5">
+        <h3 className="mb-1 text-sm font-semibold text-red-700">Danger zone</h3>
+        <p className="mb-4 text-xs text-text-subtle">
+          Deleting your account is permanent. Your email becomes reusable, and this account&apos;s local planner data will be cleared from this browser.
+        </p>
+        {!confirming ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            className="border-red-200 text-red-600 hover:bg-red-50"
+            onClick={() => setConfirming(true)}
+          >
+            Delete my account
+          </Button>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-sm font-medium text-red-700">Are you absolutely sure?</p>
+            <div className="flex gap-2">
+              <Button variant="secondary" size="sm" onClick={() => setConfirming(false)}>Cancel</Button>
+              <Button
+                size="sm"
+                className="bg-red-600 hover:bg-red-700"
+                onClick={handleDelete}
+                disabled={deleting}
+              >
+                {deleting ? "Deleting…" : "Yes, delete everything"}
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
-
-      {/* Display name */}
-      <div>
-        <label className="mb-1.5 block text-sm font-medium text-text">Display name</label>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          className={inputClass}
-          placeholder="Your name"
-        />
-      </div>
-
-      {/* Email (read-only) */}
-      <div>
-        <label className="mb-1.5 block text-sm font-medium text-text">Email</label>
-        <input value={user.email} readOnly className={cn(inputClass, "cursor-default opacity-60")} />
-        <p className="mt-1 text-xs text-text-subtle">Email cannot be changed here.</p>
-      </div>
-
-      {error && <p className="text-sm text-red-600">{error}</p>}
-      {success && <p className="text-sm text-success">Profile updated.</p>}
-
-      <Button onClick={save} disabled={saving}>
-        {saving ? "Saving…" : "Save changes"}
-      </Button>
     </div>
-  );
-}
-
-// ─── Calendar Tab ─────────────────────────────────────────────────────────────
-function CalendarTab({
-  initialPreferences,
-  storageScope,
-}: {
-  initialPreferences: Partial<CalendarPreferences>;
-  storageScope: string;
-}) {
-  const { preferences, updatePreference, resetPreferences, saveState } = useSyncedCalendarPreferences(initialPreferences, storageScope);
-
-  return (
-    <Card className="max-w-2xl border-line/70 p-5 shadow-soft">
-      <CalendarPreferencesEditor
-        preferences={preferences}
-        onPreferenceChange={updatePreference}
-        onReset={resetPreferences}
-        saveState={saveState}
-        variant="page"
-        subtitle="These are the same calendar controls used inside the planner widget."
-      />
-    </Card>
   );
 }
 
@@ -190,7 +285,6 @@ function SecurityTab({
 
   return (
     <div className="max-w-md space-y-6">
-      {/* Sign-in methods */}
       <div>
         <h3 className="mb-1 text-sm font-semibold text-text">Sign-in methods</h3>
         <p className="mb-3 text-xs text-text-subtle">These are the ways you can access this account.</p>
@@ -217,7 +311,6 @@ function SecurityTab({
         </div>
       </div>
 
-      {/* Password change */}
       <div>
         <h3 className="mb-3 text-sm font-semibold text-text">Password</h3>
         <p className="mb-3 rounded-xl bg-brand-soft px-4 py-2.5 text-sm text-brand">
@@ -271,79 +364,14 @@ function SecurityTab({
   );
 }
 
-// ─── Account Tab ─────────────────────────────────────────────────────────────
-function AccountTab({ user, storageScope }: { user: Props["user"]; storageScope: string }) {
-  const [confirming, setConfirming] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-
-  async function handleDelete() {
-    setDeleting(true);
-    const result = await deleteAccount();
-    if (result.error) {
-      setDeleting(false);
-      return;
-    }
-    clearScopedPlannerStorage(storageScope);
-    await signOut({ callbackUrl: "/auth/sign-in" });
-  }
-
-  return (
-    <div className="max-w-md space-y-6">
-      {/* Subscription */}
-      <div className="rounded-2xl border border-line/60 p-5">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-semibold text-text">Current plan</p>
-            <p className="text-xs text-text-subtle">Your subscription status</p>
-          </div>
-          <Badge tone={user.subscriptionStatus === "pro" ? "brand" : "neutral"}>
-            {user.subscriptionStatus === "pro" ? "Pro" : "Free"}
-          </Badge>
-        </div>
-        {user.subscriptionStatus === "free" && (
-          <Button variant="secondary" size="sm" className="mt-4 w-full" onClick={() => {}}>
-            Upgrade to Pro (coming soon)
-          </Button>
-        )}
-      </div>
-
-      {/* Danger zone */}
-      <div className="rounded-2xl border border-red-200 p-5">
-        <h3 className="mb-1 text-sm font-semibold text-red-700">Danger zone</h3>
-        <p className="mb-4 text-xs text-text-subtle">
-          Deleting your account is permanent. Your email becomes reusable, and this account&apos;s local planner data will be cleared from this browser.
-        </p>
-        {!confirming ? (
-          <Button
-            variant="secondary"
-            size="sm"
-            className="border-red-200 text-red-600 hover:bg-red-50"
-            onClick={() => setConfirming(true)}
-          >
-            Delete my account
-          </Button>
-        ) : (
-          <div className="space-y-2">
-            <p className="text-sm font-medium text-red-700">Are you absolutely sure?</p>
-            <div className="flex gap-2">
-              <Button variant="secondary" size="sm" onClick={() => setConfirming(false)}>Cancel</Button>
-              <Button
-                size="sm"
-                className="bg-red-600 hover:bg-red-700"
-                onClick={handleDelete}
-                disabled={deleting}
-              >
-                {deleting ? "Deleting…" : "Yes, delete everything"}
-              </Button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
+// ─── Shared ───────────────────────────────────────────────────────────────────
+function SaveStateLabel({ saveState }: { saveState?: "idle" | "saving" | "saved" | "error" }) {
+  if (saveState === "saving") return <span className="text-[11px] text-text-subtle">Saving…</span>;
+  if (saveState === "saved") return <span className="text-[11px] text-success">Saved</span>;
+  if (saveState === "error") return <span className="text-[11px] text-red-500">Couldn&apos;t save</span>;
+  return null;
 }
 
-// ─── Shared ───────────────────────────────────────────────────────────────────
 const inputClass = cn(
   "h-12 w-full rounded-2xl border px-4 text-sm text-text placeholder:text-text-subtle",
   "bg-surface outline-none transition-colors",

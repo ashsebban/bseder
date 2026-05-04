@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { CalendarView } from "@/features/calendar/types/calendar";
-import { parseIsoDate, todayIso, toIsoDate } from "@/features/calendar/lib/date";
+import { parseIsoDate, todayIso, toIsoDate } from "@/lib/date";
 
 const viewSchema = z.enum(["month", "week", "day"]);
 

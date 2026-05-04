@@ -2,8 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  getGoalTimePlacementForFraction,
   getGoalTimeStateForNow,
   isTimeInGoalWindowFraction,
+  MAARIV_GOAL_ID,
 } from "../src/features/calendar/lib/goal-time-window";
 import type { DayZmanim } from "../src/features/calendar/lib/zmanim";
 import type { Goal } from "../src/features/goals/types/goal";
@@ -54,4 +56,21 @@ test("overnight windows stay active after tzeit through alot", () => {
   assert.equal(getGoalTimeStateForNow(goal, fakeZmanim, true, new Date("2026-04-10T21:00:00")), "active");
   assert.equal(getGoalTimeStateForNow(goal, fakeZmanim, true, new Date("2026-04-10T02:00:00")), "active");
   assert.equal(getGoalTimeStateForNow(goal, fakeZmanim, true, new Date("2026-04-10T14:00:00")), "not-yet");
+});
+
+test("maariv is allowed after shkiyah with a repeat-shema caveat before tzeit", () => {
+  const goal = makeGoal({
+    id: MAARIV_GOAL_ID,
+    startsAt: "Tzais HaKochavim",
+    expiresAt: "Alot HaShachar",
+  });
+
+  assert.equal(getGoalTimePlacementForFraction(goal, fakeZmanim, 17.5).kind, "blocked");
+
+  const early = getGoalTimePlacementForFraction(goal, fakeZmanim, 19);
+  assert.equal(early.kind, "allowed-with-caveat");
+  assert.equal(early.caveat?.kind, "repeat-night-shema");
+
+  assert.equal(getGoalTimePlacementForFraction(goal, fakeZmanim, 21).kind, "allowed");
+  assert.equal(getGoalTimePlacementForFraction(goal, fakeZmanim, 2).kind, "allowed");
 });

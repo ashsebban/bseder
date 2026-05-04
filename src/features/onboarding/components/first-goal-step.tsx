@@ -174,20 +174,20 @@ export function FirstGoalStep({ onSave, onSkip }: FirstGoalStepProps) {
       {page === "basics" && (
         <div className="space-y-5">
           <div>
-            <label className="mb-2 block text-sm font-medium text-text">What do you want to work on?</label>
+            <label className="mb-2 block text-sm font-medium text-text">Goal name</label>
             <input
               type="text"
               autoFocus
-              placeholder="e.g. Daf Yomi, Exercise, Mussar…"
+              placeholder="Daf Yomi, exercise, mussar"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && title.trim()) setPage("measure"); }}
-              className="h-12 w-full rounded-2xl border border-line/60 bg-surface px-4 text-sm text-text placeholder:text-text-subtle focus:outline-none focus:ring-2 focus:ring-brand/40"
+              className="h-12 w-full rounded-2xl border border-line/60 bg-surface px-4 text-sm text-text placeholder:text-text-subtle focus:border-brand/50 focus:outline-none focus:ring-1 focus:ring-brand/25"
             />
           </div>
 
           <div>
-            <p className="mb-2 text-sm font-medium text-text">How often?</p>
+            <p className="mb-2 text-sm font-medium text-text">Repeat</p>
             <div className="grid grid-cols-4 gap-1.5">
               {CADENCE_OPTIONS.map((opt) => (
                 <button
@@ -195,7 +195,7 @@ export function FirstGoalStep({ onSave, onSkip }: FirstGoalStepProps) {
                   type="button"
                   onClick={() => setCadence(opt.value)}
                   className={cn(
-                    "rounded-xl border px-2 py-3 text-center transition-colors",
+                    "rounded-xl border px-2 py-2.5 text-center transition-colors",
                     cadence === opt.value
                       ? "border-brand bg-brand/5 text-brand"
                       : "border-line/60 bg-surface text-text hover:border-brand/40",
@@ -214,6 +214,7 @@ export function FirstGoalStep({ onSave, onSkip }: FirstGoalStepProps) {
             canNext={title.trim().length > 0}
             onNext={() => setPage("measure")}
             onSkip={onSkip}
+            disabledHint="Add a goal name to continue."
           />
         </div>
       )}
@@ -477,9 +478,9 @@ export function FirstGoalStep({ onSave, onSkip }: FirstGoalStepProps) {
       <button
         type="button"
         onClick={onSkip}
-        className="mt-3 block w-full text-center text-sm text-text-subtle underline-offset-2 hover:text-text hover:underline"
+        className="mt-3 block w-full text-center text-sm font-medium text-text-subtle transition hover:text-text"
       >
-        Skip for now
+        Skip goal setup
       </button>
     </div>
   );
@@ -496,28 +497,34 @@ interface NavRowProps {
   onNextDirect?: () => void;
   nextLabel?: string;
   onSkip?: () => void;
+  disabledHint?: string;
 }
 
-function NavRow({ canNext = true, onBack, onNext, onNextDirect, nextLabel = "Next →" }: NavRowProps) {
+function NavRow({ canNext = true, onBack, onNext, onNextDirect, nextLabel = "Next →", disabledHint }: NavRowProps) {
   return (
-    <div className="flex gap-2 pt-1">
-      {onBack ? (
+    <div className="pt-1">
+      <div className="flex gap-2">
+        {onBack ? (
+          <button
+            type="button"
+            onClick={onBack}
+            className="flex-1 rounded-2xl border border-line/60 py-3 text-sm font-medium text-text-subtle transition-colors hover:text-text"
+          >
+            Back
+          </button>
+        ) : null}
         <button
           type="button"
-          onClick={onBack}
-          className="flex-1 rounded-2xl border border-line/60 py-3 text-sm font-medium text-text-subtle transition-colors hover:text-text"
+          onClick={onNextDirect ?? onNext}
+          disabled={!canNext}
+          className="flex-1 rounded-2xl bg-brand py-3 text-sm font-medium text-white transition-colors disabled:bg-brand-soft disabled:text-brand/50"
         >
-          Back
+          {nextLabel}
         </button>
+      </div>
+      {!canNext && disabledHint ? (
+        <p className="mt-2 text-center text-xs font-medium text-text-subtle">{disabledHint}</p>
       ) : null}
-      <button
-        type="button"
-        onClick={onNextDirect ?? onNext}
-        disabled={!canNext}
-        className="flex-1 rounded-2xl bg-brand py-3 text-sm font-medium text-white transition-opacity disabled:opacity-40"
-      >
-        {nextLabel}
-      </button>
     </div>
   );
 }

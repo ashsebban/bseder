@@ -22,8 +22,8 @@ const DAY_CHIPS: Record<number, Chip[]> = {
   2: [{ label: "Daf Yomi", variant: "goal" }],
   3: [{ label: "Daf Yomi", variant: "goal" }, { label: "Mussar", variant: "goal" }],
   4: [{ label: "Daf Yomi", variant: "goal" }],
-  5: [{ label: "Candle lighting 7:24 PM", variant: "zman" }],
-  6: [{ label: "Shabbos", variant: "shabbos" }],
+  5: [{ label: "Candles 7:24", variant: "zman" }],
+  6: [{ label: "Shabbos rest", variant: "shabbos" }],
 };
 
 const variantStyles: Record<Chip["variant"], string> = {
@@ -66,7 +66,7 @@ export function ValuePropositionCard() {
 
       {/* Caption */}
       <div className="border-t border-line/40 bg-canvas px-3 py-2">
-        <p className="text-center text-[10px] text-text-subtle">Your planner, built around the Jewish calendar</p>
+        <p className="text-center text-[10px] font-medium text-text-subtle">Goals adapt to the Jewish calendar automatically.</p>
       </div>
     </div>
   );

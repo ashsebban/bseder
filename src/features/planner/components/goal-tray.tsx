@@ -3,18 +3,19 @@
 import { useState } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import { cn } from "@/lib/cn";
-import { startOfWeek, endOfWeek, startOfMonth, endOfMonth, toIsoDate } from "@/features/calendar/lib/date";
-import { DailyBacklogBadge } from "@/components/planner/daily-backlog-badge";
+import { startOfWeek, endOfWeek, startOfMonth, endOfMonth, toIsoDate } from "@/lib/date";
+import { DailyBacklogBadge } from "@/features/planner/components/daily-backlog-badge";
 import { EditableGoalTitle, GoalRowGripIcon } from "@/features/calendar/components/goal-list-row";
 import type { Goal, GoalCadence } from "@/features/goals/types/goal";
 import type { DayAssignment } from "@/features/planner/lib/day-assignment-store";
 import { computePeriodKey } from "@/features/planner/lib/period-key";
 import { computeRollupProgress, computeCrossperiodProgress, computeDailyQuantifiedUnitsRollup } from "@/features/goals/lib/goal-progress";
 import { isPrebuiltGoal } from "@/features/goals/lib/prebuilt-goals";
-import { SegmentedProgressBar } from "@/components/planner/segmented-progress-bar";
+import { SegmentedProgressBar } from "@/features/planner/components/segmented-progress-bar";
 import { getDailyBacklogEntries } from "@/features/goals/lib/daily-backlog";
 import { getGoalProgramLabel } from "@/features/goals/lib/goal-programs";
 import { DAY_KEYS } from "@/features/goals/lib/goal-applicability";
+import { getAssignmentOccurrenceDate } from "@/features/calendar/lib/goal-day";
 
 type TrayFilter = "all" | "hide-done" | "hide-allocated";
 type TrayView = "week" | "month";
@@ -26,6 +27,7 @@ interface GoalTrayProps {
   view: TrayView;
   weekStartsOn?: 0 | 1;
   filter?: TrayFilter;
+  pageSize?: number;
   onRenameGoal: (goalId: string, nextTitle: string) => void;
   onToggleDate: (goalId: string, isoDate: string) => void;
 }
@@ -38,7 +40,16 @@ const COLUMNS: { cadence: GoalCadence; label: string }[] = [
   { cadence: "one-time", label: "One-time" },
 ];
 
-const PAGE_SIZE = 2;
+function isGoalVisibleInCalendarMenu(goal: Goal, selectedIso: string, todayIsoStr = toIsoDate(new Date())): boolean {
+  if (goal.adhoc || goal.status === "paused" || goal.status === "done") return false;
+  if (!goal.endDate) return true;
+  if (goal.startDate && todayIsoStr < goal.startDate) return false;
+  if (todayIsoStr > goal.endDate) return false;
+  if (goal.startDate && selectedIso < goal.startDate) return false;
+  if (selectedIso > goal.endDate) return false;
+  return true;
+}
+
 
 function computeGoalStatusLabel({
   plannedCount,
@@ -92,20 +103,21 @@ function getAssignmentsForPeriod(
   const relevant = assignments.filter((a) => a.goalId === goalId);
   const periodKey = computePeriodKey(cadence, selectedDate);
   const isInSelectedDateRange = (assignment: DayAssignment): boolean => {
+    const occurrenceDate = getAssignmentOccurrenceDate(assignment);
     switch (cadence) {
       case "weekly": {
         const start = toIsoDate(startOfWeek(selectedDate, weekStartsOn));
         const end = toIsoDate(endOfWeek(selectedDate, weekStartsOn));
-        return assignment.date >= start && assignment.date <= end;
+        return occurrenceDate >= start && occurrenceDate <= end;
       }
       case "monthly": {
         const start = toIsoDate(startOfMonth(selectedDate));
         const end = toIsoDate(endOfMonth(selectedDate));
-        return assignment.date >= start && assignment.date <= end;
+        return occurrenceDate >= start && occurrenceDate <= end;
       }
       case "yearly": {
         const year = selectedDate.getFullYear().toString();
-        return assignment.date.startsWith(`${year}-`);
+        return occurrenceDate.startsWith(`${year}-`);
       }
       default:
         return true;
@@ -121,7 +133,99 @@ function getAssignmentsForPeriod(
   return relevant.filter(isInSelectedDateRange);
 }
 
-function GoalPill({
+export function computeGoalCountsForPill(
+  goal: Goal,
+  dayAssignments: DayAssignment[],
+  selectedDate: Date,
+  view: TrayView,
+  weekStartsOn: 0 | 1 = 0,
+): {
+  planned: number;
+  completed: number;
+  missed: number;
+  overrideTarget?: number;
+  overrideUnit?: string;
+  dailyBacklogCount?: number;
+} {
+  const cadence = goal.cadence;
+
+  if (cadence === "daily") {
+    const today = new Date();
+    let periodStart: Date;
+    let periodEnd: Date;
+    if (view === "month") {
+      periodStart = startOfMonth(selectedDate);
+      periodEnd = new Date(selectedDate.getFullYear(), selectedDate.getMonth() + 1, 1);
+    } else {
+      periodStart = startOfWeek(selectedDate, weekStartsOn);
+      periodEnd = new Date(periodStart);
+      periodEnd.setDate(periodStart.getDate() + 7);
+    }
+    const rollup = computeRollupProgress(goal, periodStart, periodEnd, today, dayAssignments);
+    if (goal.type === "quantified" && goal.target) {
+      const units = computeDailyQuantifiedUnitsRollup(goal, periodStart, periodEnd, today, dayAssignments);
+      return {
+        planned: units.total, completed: units.done, missed: units.missed,
+        overrideTarget: units.total,
+        overrideUnit: goal.targetUnit ? ` ${goal.targetUnit}` : "",
+        dailyBacklogCount: getDailyBacklogEntries(goal, today).length,
+      };
+    }
+    return {
+      planned: rollup.total, completed: rollup.done, missed: rollup.missed,
+      overrideTarget: rollup.total, overrideUnit: " days",
+      dailyBacklogCount: getDailyBacklogEntries(goal, today).length,
+    };
+  }
+
+  if (cadence === "weekly" && view === "month") {
+    const result = computeCrossperiodProgress(goal, "monthly", new Date(), dayAssignments, selectedDate);
+    return { planned: result.total, completed: result.done, missed: 0, overrideTarget: result.total };
+  }
+
+  const isAutoScheduled = cadence === "weekly" && goal.activeDays && goal.activeDays.length > 0;
+  if (isAutoScheduled) {
+    const perDayTarget = goal.type === "quantified" && goal.target && goal.activeDays!.length
+      ? Math.ceil(goal.target / goal.activeDays!.length) : 1;
+    const assigned = getAssignmentsForPeriod(dayAssignments, goal.id, cadence, selectedDate, weekStartsOn);
+    const nonSkipped = assigned.filter((a) => !a.skipped);
+    const replacedPreferredDays = new Set(assigned.filter((a) => a.replacedAutoDate).map((a) => a.replacedAutoDate!));
+    const manualPlanned = nonSkipped.reduce((s, a) => s + (a.targetAmount ?? 1), 0);
+    const manualCompleted = nonSkipped.filter((a) => a.completed).reduce((s, a) => s + (a.targetAmount ?? 1), 0);
+    const weekStart = startOfWeek(selectedDate, weekStartsOn);
+    let autoPlanned = 0;
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(weekStart);
+      d.setDate(weekStart.getDate() + i);
+      const iso = toIsoDate(d);
+      const dayKey = DAY_KEYS[d.getDay()];
+      if (goal.activeDays!.includes(dayKey) && (!goal.startDate || iso >= goal.startDate) &&
+          !replacedPreferredDays.has(iso) && !assigned.some((a) => a.date === iso)) {
+        autoPlanned += perDayTarget;
+      }
+    }
+    const manualDates = new Set(nonSkipped.map((a) => getAssignmentOccurrenceDate(a)));
+    const weekStartIso = toIsoDate(startOfWeek(selectedDate, weekStartsOn));
+    const weekEndIso = toIsoDate(endOfWeek(selectedDate, weekStartsOn));
+    const autoCompleted = (goal.completedDates ?? []).filter((d) => {
+      if (d < weekStartIso || d > weekEndIso) return false;
+      const dayObj = new Date(d + "T00:00:00");
+      const dayKey = DAY_KEYS[dayObj.getDay()];
+      return goal.activeDays!.includes(dayKey) && (!goal.startDate || d >= goal.startDate) &&
+        !replacedPreferredDays.has(d) && !manualDates.has(d);
+    }).length * perDayTarget;
+    return { planned: manualPlanned + autoPlanned, completed: manualCompleted + autoCompleted, missed: 0 };
+  }
+
+  const assigned = getAssignmentsForPeriod(dayAssignments, goal.id, cadence, selectedDate, weekStartsOn);
+  return {
+    planned: assigned.reduce((s, a) => s + (a.targetAmount ?? 1), 0),
+    completed: assigned.filter((a) => a.completed).reduce((s, a) => s + (a.targetAmount ?? 1), 0),
+    missed: 0,
+  };
+}
+
+export function GoalPill({
   goal,
   plannedCount,
   completedCount,
@@ -248,6 +352,7 @@ function GoalColumn({
   filter,
   view,
   weekStartsOn = 0,
+  pageSize,
   onRenameGoal,
   onToggleDate,
 }: {
@@ -259,127 +364,14 @@ function GoalColumn({
   filter: TrayFilter;
   view: TrayView;
   weekStartsOn?: 0 | 1;
+  pageSize: number;
   onRenameGoal: (goalId: string, nextTitle: string) => void;
   onToggleDate: (goalId: string, isoDate: string) => void;
 }) {
   const [offset, setOffset] = useState(0);
 
-  function getGoalCounts(goal: Goal): {
-    planned: number;
-    completed: number;
-    missed: number;
-    overrideTarget?: number;
-    overrideUnit?: string;
-    dailyBacklogCount?: number;
-  } {
-    // ── Daily: use computeRollupProgress for the relevant period ──
-    if (goal.cadence === "daily") {
-      const today = new Date();
-      let periodStart: Date;
-      let periodEnd: Date;
-      if (view === "month") {
-        periodStart = startOfMonth(selectedDate);
-        periodEnd = new Date(selectedDate.getFullYear(), selectedDate.getMonth() + 1, 1);
-      } else {
-        periodStart = startOfWeek(selectedDate, weekStartsOn);
-        periodEnd = new Date(periodStart);
-        periodEnd.setDate(periodStart.getDate() + 7);
-      }
-      const rollup = computeRollupProgress(goal, periodStart, periodEnd, today, dayAssignments);
-      // Quantified daily: use unit-level rollup (preserves partial completions).
-      if (goal.type === "quantified" && goal.target) {
-        const units = computeDailyQuantifiedUnitsRollup(goal, periodStart, periodEnd, today, dayAssignments);
-        return {
-          planned: units.total,
-          completed: units.done,
-          missed: units.missed,
-          overrideTarget: units.total,
-          overrideUnit: goal.targetUnit ? ` ${goal.targetUnit}` : "",
-          dailyBacklogCount: getDailyBacklogEntries(goal, today).length,
-        };
-      }
-      return {
-        planned: rollup.total,
-        completed: rollup.done,
-        missed: rollup.missed,
-        overrideTarget: rollup.total,
-        overrideUnit: " days",
-        dailyBacklogCount: getDailyBacklogEntries(goal, today).length,
-      };
-    }
-
-    // ── Weekly goals in monthly view: use canonical cross-period computation ──
-    if (goal.cadence === "weekly" && view === "month") {
-      const result = computeCrossperiodProgress(goal, "monthly", new Date(), dayAssignments, selectedDate);
-      return {
-        planned: result.total,
-        completed: result.done,
-        missed: 0,
-        overrideTarget: result.total,
-      };
-    }
-
-    // ── Auto-scheduled weekly goals in weekly view ──
-    const isAutoScheduled = goal.cadence === "weekly" && goal.activeDays && goal.activeDays.length > 0;
-
-    if (isAutoScheduled) {
-      // For quantified goals, each auto-show slot is worth perDayTarget units (not 1)
-      // so planned/completed stay in the same units as manualPlanned/manualCompleted.
-      const perDayTarget = goal.type === "quantified" && goal.target && goal.activeDays!.length
-        ? Math.ceil(goal.target / goal.activeDays!.length)
-        : 1;
-
-      const assigned = getAssignmentsForPeriod(dayAssignments, goal.id, cadence, selectedDate, weekStartsOn);
-      const nonSkipped = assigned.filter((a) => !a.skipped);
-      const replacedPreferredDays = new Set(
-        assigned.filter((a) => a.replacedAutoDate).map((a) => a.replacedAutoDate!),
-      );
-      const manualPlanned = nonSkipped.reduce((s, a) => s + (a.targetAmount ?? 1), 0);
-      const manualCompleted = nonSkipped.filter((a) => a.completed).reduce((s, a) => s + (a.targetAmount ?? 1), 0);
-
-      const weekStart = startOfWeek(selectedDate, weekStartsOn);
-      let autoPlanned = 0;
-      for (let i = 0; i < 7; i++) {
-        const d = new Date(weekStart);
-        d.setDate(weekStart.getDate() + i);
-        const iso = toIsoDate(d);
-        const dayKey = DAY_KEYS[d.getDay()];
-        if (
-          goal.activeDays!.includes(dayKey) &&
-          (!goal.startDate || iso >= goal.startDate) &&
-          !replacedPreferredDays.has(iso) &&
-          !assigned.some((a) => a.date === iso)
-        ) {
-          autoPlanned += perDayTarget;
-        }
-      }
-
-      const manualDates = new Set(nonSkipped.map((a) => a.date));
-      const weekStartIso = toIsoDate(startOfWeek(selectedDate, weekStartsOn));
-      const weekEndIso = toIsoDate(endOfWeek(selectedDate, weekStartsOn));
-      const autoCompletedCount = (goal.completedDates ?? []).filter((d) => {
-        if (d < weekStartIso || d > weekEndIso) return false;
-        const dayObj = new Date(d + "T00:00:00");
-        const dayKey = DAY_KEYS[dayObj.getDay()];
-        return (
-          goal.activeDays!.includes(dayKey) &&
-          (!goal.startDate || d >= goal.startDate) &&
-          !replacedPreferredDays.has(d) &&
-          !manualDates.has(d)
-        );
-      }).length;
-      const autoCompleted = autoCompletedCount * perDayTarget;
-
-      return { planned: manualPlanned + autoPlanned, completed: manualCompleted + autoCompleted, missed: 0 };
-    }
-
-    // ── All other goals: period-scoped assignments ──
-    const assigned = getAssignmentsForPeriod(dayAssignments, goal.id, cadence, selectedDate, weekStartsOn);
-    return {
-      planned: assigned.reduce((s, a) => s + (a.targetAmount ?? 1), 0),
-      completed: assigned.filter((a) => a.completed).reduce((s, a) => s + (a.targetAmount ?? 1), 0),
-      missed: 0,
-    };
+  function getGoalCounts(goal: Goal) {
+    return computeGoalCountsForPill(goal, dayAssignments, selectedDate, view, weekStartsOn);
   }
 
   function getPeriodLabel(goal: Goal): string | undefined {
@@ -410,37 +402,56 @@ function GoalColumn({
       return true;
     });
 
-  const visibleGoals = colGoals.slice(offset, offset + PAGE_SIZE);
+  const visibleGoals = colGoals.slice(offset, offset + pageSize);
   const canUp = offset > 0;
-  const canDown = offset + PAGE_SIZE < colGoals.length;
+  const canDown = offset + pageSize < colGoals.length;
+  const isPaginated = colGoals.length > pageSize;
+  const currentPage = Math.floor(offset / pageSize) + 1;
+  const totalPages = Math.ceil(colGoals.length / pageSize);
 
   return (
     <div className="flex flex-col">
-      <p className="mb-2 flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wide text-slate-400">
-        {label}
-        {colGoals.length > 0 && (
-          <span className="rounded-full bg-slate-100 px-1.5 py-[1px] text-[9px] font-bold tabular-nums text-slate-400">
-            {colGoals.length}
-          </span>
+      <div className="mb-2 flex items-center justify-between">
+        <p className="flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wide text-slate-400">
+          {label}
+          {colGoals.length > 0 && (
+            <span className="rounded-full bg-slate-100 px-1.5 py-[1px] text-[9px] font-bold tabular-nums text-slate-400">
+              {colGoals.length}
+            </span>
+          )}
+        </p>
+        {isPaginated && (
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setOffset((o) => Math.max(0, o - pageSize))}
+              disabled={!canUp}
+              className="flex items-center justify-center text-slate-500 transition-colors hover:text-slate-800 disabled:pointer-events-none disabled:opacity-25"
+            >
+              <svg width="12" height="7" viewBox="0 0 10 6" fill="none">
+                <path d="M1 5L5 1L9 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </button>
+            <span className="text-[10px] font-semibold tabular-nums text-slate-500">
+              {currentPage}/{totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={() => setOffset((o) => o + pageSize)}
+              disabled={!canDown}
+              className="flex items-center justify-center text-slate-500 transition-colors hover:text-slate-800 disabled:pointer-events-none disabled:opacity-25"
+            >
+              <svg width="12" height="7" viewBox="0 0 10 6" fill="none">
+                <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </button>
+          </div>
         )}
-      </p>
+      </div>
       {colGoals.length === 0 ? (
         <p className="text-[11px] text-slate-300">—</p>
       ) : (
         <div className="flex flex-col gap-2">
-          <button
-            type="button"
-            onClick={() => setOffset((o) => Math.max(0, o - 1))}
-            className={cn(
-              "flex w-full justify-center text-slate-400 hover:text-slate-600 transition-colors",
-              !canUp && "invisible pointer-events-none",
-            )}
-          >
-            <svg width="10" height="6" viewBox="0 0 10 6" fill="none">
-              <path d="M1 5L5 1L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </button>
-
           {visibleGoals.map((goal) => {
             const counts = getGoalCounts(goal);
             const parentTitle = goal.parentGoalId
@@ -465,19 +476,6 @@ function GoalColumn({
               />
             );
           })}
-
-          <button
-            type="button"
-            onClick={() => setOffset((o) => o + 1)}
-            className={cn(
-              "flex w-full justify-center text-slate-400 hover:text-slate-600 transition-colors",
-              !canDown && "invisible pointer-events-none",
-            )}
-          >
-            <svg width="10" height="6" viewBox="0 0 10 6" fill="none">
-              <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </button>
         </div>
       )}
     </div>
@@ -485,20 +483,13 @@ function GoalColumn({
 }
 
 
-export function GoalTray({ goals, dayAssignments, selectedDate, view, weekStartsOn = 0, filter = "all", onRenameGoal, onToggleDate }: GoalTrayProps) {
+export function GoalTray({ goals, dayAssignments, selectedDate, view, weekStartsOn = 0, filter = "all", pageSize: pageSizeProp, onRenameGoal, onToggleDate }: GoalTrayProps) {
   const selectedIso = toIsoDate(selectedDate);
 
   const allLibraryGoals = goals.filter(
     (g) => !g.adhoc && g.status !== "paused" && g.status !== "done",
   );
-  const libraryGoals = allLibraryGoals.filter((g) => {
-    // Calendar-only rule for seasonal goals:
-    // show only when the selected date is inside the active window.
-    if (!g.endDate) return true;
-    if (g.startDate && selectedIso < g.startDate) return false;
-    if (selectedIso > g.endDate) return false;
-    return true;
-  });
+  const libraryGoals = goals.filter((g) => isGoalVisibleInCalendarMenu(g, selectedIso));
 
   if (libraryGoals.length === 0) {
     if (allLibraryGoals.length === 0) {
@@ -525,6 +516,8 @@ export function GoalTray({ goals, dayAssignments, selectedDate, view, weekStarts
     libraryGoals.some((g) => g.cadence === cadence),
   );
 
+  const pageSize = pageSizeProp ?? 3;
+
   return (
     <div>
       <div
@@ -542,11 +535,153 @@ export function GoalTray({ goals, dayAssignments, selectedDate, view, weekStarts
             filter={filter}
             view={view}
             weekStartsOn={weekStartsOn}
+            pageSize={pageSize}
             onRenameGoal={onRenameGoal}
             onToggleDate={onToggleDate}
           />
         ))}
       </div>
+    </div>
+  );
+}
+
+// ── Side-drawer goal tray ─────────────────────────────────────────────────────
+
+const DRAWER_FILTERS = [
+  { id: "all",      label: "All" },
+  { id: "daily",    label: "Daily" },
+  { id: "weekly",   label: "Weekly" },
+  { id: "monthly",  label: "Monthly" },
+  { id: "yearly",   label: "Yearly" },
+  { id: "seasonal", label: "Seasonal" },
+  { id: "projects", label: "Projects" },
+] as const;
+
+type DrawerFilter = typeof DRAWER_FILTERS[number]["id"];
+
+const CADENCE_SECTIONS: { cadence: GoalCadence; label: string }[] = [
+  { cadence: "daily",    label: "Daily" },
+  { cadence: "weekly",   label: "Weekly" },
+  { cadence: "monthly",  label: "Monthly" },
+  { cadence: "yearly",   label: "Yearly" },
+  { cadence: "one-time", label: "Projects" },
+];
+
+export function DrawerGoalTray({
+  goals,
+  dayAssignments,
+  selectedDate,
+  view,
+  weekStartsOn = 0,
+  onRenameGoal,
+}: {
+  goals: Goal[];
+  dayAssignments: DayAssignment[];
+  selectedDate: Date;
+  view: TrayView;
+  weekStartsOn?: 0 | 1;
+  onRenameGoal: (goalId: string, nextTitle: string) => void;
+}) {
+  const [activeFilter, setActiveFilter] = useState<DrawerFilter>("all");
+  const selectedIso = toIsoDate(selectedDate);
+
+  const activeGoals = goals.filter((g) => isGoalVisibleInCalendarMenu(g, selectedIso));
+
+  const counts: Record<DrawerFilter, number> = {
+    all:      activeGoals.length,
+    daily:    activeGoals.filter((g) => g.cadence === "daily").length,
+    weekly:   activeGoals.filter((g) => g.cadence === "weekly").length,
+    monthly:  activeGoals.filter((g) => g.cadence === "monthly").length,
+    yearly:   activeGoals.filter((g) => g.cadence === "yearly").length,
+    seasonal: activeGoals.filter((g) => !!g.endDate).length,
+    projects: activeGoals.filter((g) => g.cadence === "one-time").length,
+  };
+
+  const filteredGoals = (() => {
+    switch (activeFilter) {
+      case "daily":    return activeGoals.filter((g) => g.cadence === "daily");
+      case "weekly":   return activeGoals.filter((g) => g.cadence === "weekly");
+      case "monthly":  return activeGoals.filter((g) => g.cadence === "monthly");
+      case "yearly":   return activeGoals.filter((g) => g.cadence === "yearly");
+      case "seasonal": return activeGoals.filter((g) => !!g.endDate);
+      case "projects": return activeGoals.filter((g) => g.cadence === "one-time");
+      default:         return activeGoals;
+    }
+  })();
+
+  const currentIndex = DRAWER_FILTERS.findIndex((f) => f.id === activeFilter);
+  const nextFilter = DRAWER_FILTERS[(currentIndex + 1) % DRAWER_FILTERS.length];
+
+  function renderPill(g: Goal) {
+    const c = computeGoalCountsForPill(g, dayAssignments, selectedDate, view, weekStartsOn);
+    return (
+      <GoalPill
+        key={g.id}
+        goal={g}
+        plannedCount={c.planned}
+        completedCount={c.completed}
+        missedCount={c.missed}
+        overrideTarget={c.overrideTarget}
+        overrideUnit={c.overrideUnit}
+        parentTitle={g.parentGoalId ? goals.find((p) => p.id === g.parentGoalId)?.title : undefined}
+        draggable
+        onRenameGoal={onRenameGoal}
+        programLabel={getGoalProgramLabel(g, selectedDate)}
+        dailyBacklogCount={c.dailyBacklogCount}
+      />
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* Cycle filter button */}
+      <button
+        type="button"
+        onClick={() => setActiveFilter(nextFilter.id)}
+        className="flex w-full items-center justify-between rounded-lg bg-slate-100 px-3 py-1.5 text-left transition-colors hover:bg-slate-200"
+      >
+        <span className="text-[12px] font-semibold text-slate-700">
+          {DRAWER_FILTERS.find((f) => f.id === activeFilter)?.label}
+          {counts[activeFilter] > 0 && (
+            <span className="ml-1.5 text-[11px] font-normal text-slate-400">{counts[activeFilter]}</span>
+          )}
+        </span>
+        <span className="text-[10px] text-slate-400">{nextFilter.label} →</span>
+      </button>
+
+      {/* Goal list */}
+      {activeFilter === "all" ? (
+        <div className="flex flex-col gap-4">
+          {CADENCE_SECTIONS.filter((s) => activeGoals.some((g) => g.cadence === s.cadence)).map((s) => (
+            <div key={s.cadence}>
+              <p className="mb-2 text-[10px] font-bold uppercase tracking-wide text-slate-400">{s.label}</p>
+              <div className="flex flex-col gap-2">
+                {activeGoals.filter((g) => g.cadence === s.cadence).map(renderPill)}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {filteredGoals.length === 0
+            ? <p className="text-[12px] text-slate-300">No {activeFilter} goals.</p>
+            : filteredGoals.map(renderPill)
+          }
+        </div>
+      )}
+
+      {/* Contextual action */}
+      <a
+        href={activeFilter === "all"
+          ? "/goals"
+          : activeFilter === "projects"
+            ? "/goals?new=one-time"
+            : `/goals?new=${activeFilter}`
+        }
+        className="mt-1 block text-center text-[11px] font-medium text-slate-400 transition-colors hover:text-brand"
+      >
+        {activeFilter === "all" ? "Manage goals →" : `+ New ${activeFilter === "projects" ? "project" : activeFilter + " goal"}`}
+      </a>
     </div>
   );
 }

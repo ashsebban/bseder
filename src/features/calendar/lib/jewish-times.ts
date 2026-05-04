@@ -13,10 +13,10 @@ const HOLIDAY_FLAG_MASK =
   flags.CHANUKAH_CANDLES;
 import type { CalendarDayMetadata } from "@/features/calendar/types/calendar";
 import { resolveLocation } from "@/features/calendar/lib/locations";
-import { toIsoDate } from "@/features/calendar/lib/date";
+import { toIsoDate } from "@/lib/date";
 import { formatTimeInZone } from "@/features/calendar/lib/time-format";
 import type { CalendarPreferences } from "@/features/settings/types/calendar-preferences";
-import { getHavdalahOptions } from "@/features/settings/lib/calendar-preferences";
+import { getHavdalahOptions, getEffectiveHavdalahOpinion } from "@/features/settings/lib/calendar-preferences";
 
 function stripParshaPrefix(value: string) {
   return value.replace(/^Parashat\s+/i, "").trim();
@@ -85,7 +85,7 @@ export function buildJewishTimesByDate(start: Date, end: Date, preferences: Cale
     omer: true,
     location,
     hour12: preferences.timeFormat === "12h",
-    ...getHavdalahOptions(preferences.havdalahOpinion),
+    ...getHavdalahOptions(getEffectiveHavdalahOpinion(preferences)),
   });
 
   for (const event of locationEvents) {

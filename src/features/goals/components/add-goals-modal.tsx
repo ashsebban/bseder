@@ -27,6 +27,12 @@ interface AddGoalsModalProps {
   onEdit: (goal: Goal) => void;
   updatePreference: <K extends keyof CalendarPreferences>(key: K, value: CalendarPreferences[K]) => void;
   setGoals: (goals: Goal[]) => void;
+  allowEditActiveGoals?: boolean;
+  onDone?: () => void;
+  title?: string;
+  description?: string;
+  individualTabLabel?: string;
+  searchPlaceholder?: string;
 }
 
 type Tab = "individual" | "bundles";
@@ -41,6 +47,12 @@ export function AddGoalsModal({
   onEdit,
   updatePreference,
   setGoals,
+  allowEditActiveGoals = true,
+  onDone,
+  title = "Browse Goals",
+  description = "Add prebuilt Jewish goals to your practice",
+  individualTabLabel = "Goals",
+  searchPlaceholder = "Search goals...",
 }: AddGoalsModalProps) {
   const [activeTab, setActiveTab] = useState<Tab>("individual");
   const [selectedCategory, setSelectedCategory] = useState<string>("All");
@@ -116,7 +128,18 @@ export function AddGoalsModal({
   const allBundleActive = bundleDefs.length > 0 && bundleDefs.every((d) => isActive(d.id));
   const remainingDefs = bundleDefs.filter((d) => !isActive(d.id));
 
-  const footer = selectedBundle ? (
+  const doneFooter = onDone ? (
+    <div className="flex items-center justify-between gap-3">
+      <p className="text-sm font-semibold text-text-muted">
+        {goals.length === 1 ? "1 selected" : `${goals.length} selected`}
+      </p>
+      <Button variant="primary" size="sm" onClick={onDone}>
+        Done
+      </Button>
+    </div>
+  ) : null;
+
+  const bundleFooter = selectedBundle ? (
     allBundleActive ? (
       <p className="text-center text-sm font-semibold text-success">
         All goals in this bundle are active ✓
@@ -133,15 +156,22 @@ export function AddGoalsModal({
     )
   ) : undefined;
 
+  const footer = selectedBundle && doneFooter ? (
+    <div className="space-y-3">
+      {bundleFooter}
+      {doneFooter}
+    </div>
+  ) : selectedBundle ? bundleFooter : doneFooter;
+
   return (
     <Modal
       open={open}
       onClose={handleClose}
-      title={selectedBundle ? selectedBundle.name : "Browse Goals"}
+      title={selectedBundle ? selectedBundle.name : title}
       description={
         selectedBundle
           ? undefined
-          : "Add prebuilt Jewish goals to your practice"
+          : description
       }
       panelClassName="max-w-2xl w-full"
       bodyClassName="overflow-hidden p-0 flex flex-col"
@@ -176,6 +206,7 @@ export function AddGoalsModal({
                   onAdd={handleAdd}
                   onRemove={handleRemove}
                   onEdit={onEdit}
+                  allowEdit={allowEditActiveGoals}
                 />
               ))}
             </div>
@@ -198,7 +229,7 @@ export function AddGoalsModal({
                     : "border-transparent text-text-muted hover:text-text",
                 )}
               >
-                {tab === "individual" ? "Goals" : "Bundles"}
+                {tab === "individual" ? individualTabLabel : "Bundles"}
               </button>
             ))}
           </div>
@@ -216,6 +247,8 @@ export function AddGoalsModal({
                 onAdd={handleAdd}
                 onRemove={handleRemove}
                 onEdit={onEdit}
+                allowEdit={allowEditActiveGoals}
+                searchPlaceholder={searchPlaceholder}
               />
             ) : (
               <BundlesTab
@@ -244,6 +277,8 @@ function IndividualGoalsTab({
   onAdd,
   onRemove,
   onEdit,
+  allowEdit,
+  searchPlaceholder,
 }: {
   selectedCategory: string;
   onSelectCategory: (cat: string) => void;
@@ -254,6 +289,8 @@ function IndividualGoalsTab({
   onAdd: (def: PrebuiltGoalDef) => void;
   onRemove: (def: PrebuiltGoalDef) => void;
   onEdit: (goal: Goal) => void;
+  allowEdit: boolean;
+  searchPlaceholder: string;
 }) {
   return (
     <div className="flex flex-col gap-3 px-5 py-4">
@@ -262,7 +299,7 @@ function IndividualGoalsTab({
         <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-subtle" />
         <input
           type="text"
-          placeholder="Search goals…"
+          placeholder={searchPlaceholder}
           value={search}
           onChange={(e) => onSearch(e.target.value)}
           className="w-full rounded-xl border border-line bg-surface-muted/50 py-2.5 pl-9 pr-3 text-sm text-text placeholder:text-text-subtle transition focus:border-brand/40 focus:outline-none focus:ring-2 focus:ring-brand/10"
@@ -299,6 +336,7 @@ function IndividualGoalsTab({
               onAdd={onAdd}
               onRemove={onRemove}
               onEdit={onEdit}
+              allowEdit={allowEdit}
               showCategory={selectedCategory === "All" && !search.trim()}
             />
           ))}
@@ -420,6 +458,7 @@ function GoalCard({
   onAdd,
   onRemove,
   onEdit,
+  allowEdit = true,
   showCategory = false,
 }: {
   def: PrebuiltGoalDef;
@@ -427,6 +466,7 @@ function GoalCard({
   onAdd: (def: PrebuiltGoalDef) => void;
   onRemove: (def: PrebuiltGoalDef) => void;
   onEdit: (goal: Goal) => void;
+  allowEdit?: boolean;
   showCategory?: boolean;
 }) {
   const active = !!activeGoal;
@@ -467,14 +507,16 @@ function GoalCard({
             <Check className="h-3 w-3" strokeWidth={2.5} />
             Active
           </span>
-          <button
-            type="button"
-            onClick={() => onEdit(activeGoal)}
-            title="Edit goal"
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-text-subtle transition hover:bg-surface-muted hover:text-text"
-          >
-            <Pencil className="h-3.5 w-3.5" />
-          </button>
+          {allowEdit && (
+            <button
+              type="button"
+              onClick={() => onEdit(activeGoal)}
+              title="Edit goal"
+              className="flex h-7 w-7 items-center justify-center rounded-lg text-text-subtle transition hover:bg-surface-muted hover:text-text"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onRemove(def)}

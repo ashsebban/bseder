@@ -98,6 +98,11 @@ function notchByFrac(frac: number): ZmanNotch {
   return ZMANIM_NOTCHES.find((n) => n.frac === frac) ?? ZMANIM_NOTCHES[0];
 }
 
+function notchByKey(key: string | null): ZmanNotch | null {
+  if (!key) return null;
+  return ZMANIM_NOTCHES.find((n) => n.key === key) ?? null;
+}
+
 function withAlpha(hex: string, alpha: string): string {
   return `${hex}${alpha}`;
 }
@@ -116,23 +121,21 @@ interface ZmanimArcPickerProps {
 export function ZmanimArcPicker({ startKey, endKey, onChange }: ZmanimArcPickerProps) {
   const svgRef = useRef<SVGSVGElement>(null);
 
-  const [startFrac, setStartFrac] = useState(
-    () => ZMANIM_NOTCHES.find((n) => n.key === startKey)?.frac ?? FIRST_FRAC,
-  );
-  const [endFrac, setEndFrac] = useState(
-    () => ZMANIM_NOTCHES.find((n) => n.key === endKey)?.frac ?? LAST_FRAC,
-  );
   const [dragging, setDragging]   = useState<"start" | "end" | null>(null);
   const [hovered,  setHovered]    = useState<ZmanNotch | null>(null);
 
-  // Notify parent
-  useEffect(() => {
-    onChange(
-      startFrac === FIRST_FRAC ? null : notchByFrac(startFrac).key,
-      endFrac   === LAST_FRAC  ? null : notchByFrac(endFrac).key,
-    );
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startFrac, endFrac]);
+  const selectedStartNotch = notchByKey(startKey);
+  const selectedEndNotch = notchByKey(endKey);
+  const startFrac = selectedStartNotch?.frac ?? FIRST_FRAC;
+  const endFrac = selectedEndNotch?.frac ?? LAST_FRAC;
+  const isOpenStart = selectedStartNotch === null;
+  const isOpenEnd = selectedEndNotch === null;
+  const isFullRange = isOpenStart && isOpenEnd;
+  const wrapsRange = !isOpenStart && !isOpenEnd && startFrac > endFrac;
+  const startNotch = selectedStartNotch ?? notchByFrac(FIRST_FRAC);
+  const endNotch = selectedEndNotch ?? notchByFrac(LAST_FRAC);
+  const isFracActive = (frac: number) =>
+    isFullRange || (wrapsRange ? frac >= startFrac || frac <= endFrac : frac >= startFrac && frac <= endFrac);
 
   function svgXFromEvent(e: MouseEvent | TouchEvent): number {
     const svg = svgRef.current;
@@ -165,9 +168,10 @@ export function ZmanimArcPicker({ startKey, endKey, onChange }: ZmanimArcPickerP
   const onMove = useCallback((e: MouseEvent | TouchEvent) => {
     if (!dragging) return;
     const snapped = snapToNotch(xToFrac(svgXFromEvent(e)));
-    if (dragging === "start") setStartFrac(Math.min(snapped, endFrac));
-    else                      setEndFrac(Math.max(snapped, startFrac));
-  }, [dragging, startFrac, endFrac]);
+    const nextKey = notchByFrac(snapped).key;
+    if (dragging === "start") onChange(nextKey, endKey);
+    else                      onChange(startKey, nextKey);
+  }, [dragging, endKey, onChange, startKey]);
 
   const onUp = useCallback(() => setDragging(null), []);
 
@@ -185,11 +189,8 @@ export function ZmanimArcPicker({ startKey, endKey, onChange }: ZmanimArcPickerP
     };
   }, [dragging, onMove, onUp]);
 
-  const startPt      = bezier(startFrac);
-  const endPt        = bezier(endFrac);
-  const isFullRange  = startFrac === FIRST_FRAC && endFrac === LAST_FRAC;
-  const startNotch   = notchByFrac(startFrac);
-  const endNotch     = notchByFrac(endFrac);
+  const startPt = bezier(startFrac);
+  const endPt = bezier(endFrac);
 
   return (
     <div className="select-none overflow-hidden rounded-[28px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f7fbff_52%,#fff9f1_100%)] px-3 pb-4 pt-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.95),0_10px_24px_rgba(148,163,184,0.12)]">
@@ -265,7 +266,14 @@ export function ZmanimArcPicker({ startKey, endKey, onChange }: ZmanimArcPickerP
 
         {/* ── Active window fill ── */}
         {!isFullRange && (
-          <path d={windowFillPath(startFrac, endFrac)} fill="url(#windowFill)" />
+          wrapsRange ? (
+            <>
+              <path d={windowFillPath(startFrac, LAST_FRAC)} fill="url(#windowFill)" />
+              <path d={windowFillPath(FIRST_FRAC, endFrac)} fill="url(#windowFill)" />
+            </>
+          ) : (
+            <path d={windowFillPath(startFrac, endFrac)} fill="url(#windowFill)" />
+          )
         )}
 
         {/* ── Horizon line ── */}
@@ -280,7 +288,7 @@ export function ZmanimArcPicker({ startKey, endKey, onChange }: ZmanimArcPickerP
         {/* ── Tick marks from notch down to horizon ── */}
         {ZMANIM_NOTCHES.map((n) => {
           const pt = bezier(n.frac);
-          const isActive = n.frac >= startFrac && n.frac <= endFrac;
+          const isActive = isFracActive(n.frac);
           return (
             <line
               key={`tick-${n.key}`}
@@ -314,31 +322,44 @@ export function ZmanimArcPicker({ startKey, endKey, onChange }: ZmanimArcPickerP
         />
 
         {/* ── Dim the inactive left/right segments instead of recoloring the sky ── */}
-        {!isFullRange && startFrac > FIRST_FRAC && (
+        {!isFullRange && wrapsRange ? (
           <path
-            d={partialArcPath(FIRST_FRAC, startFrac)}
+            d={partialArcPath(endFrac, startFrac)}
             fill="none"
             stroke="#f8fafc"
             strokeOpacity="0.8"
             strokeWidth="6.5"
             strokeLinecap="round"
           />
-        )}
-        {!isFullRange && endFrac < LAST_FRAC && (
-          <path
-            d={partialArcPath(endFrac, LAST_FRAC)}
-            fill="none"
-            stroke="#f8fafc"
-            strokeOpacity="0.8"
-            strokeWidth="6.5"
-            strokeLinecap="round"
-          />
+        ) : (
+          <>
+            {!isFullRange && startFrac > FIRST_FRAC && (
+              <path
+                d={partialArcPath(FIRST_FRAC, startFrac)}
+                fill="none"
+                stroke="#f8fafc"
+                strokeOpacity="0.8"
+                strokeWidth="6.5"
+                strokeLinecap="round"
+              />
+            )}
+            {!isFullRange && endFrac < LAST_FRAC && (
+              <path
+                d={partialArcPath(endFrac, LAST_FRAC)}
+                fill="none"
+                stroke="#f8fafc"
+                strokeOpacity="0.8"
+                strokeWidth="6.5"
+                strokeLinecap="round"
+              />
+            )}
+          </>
         )}
 
         {/* ── Notch dots ── */}
         {ZMANIM_NOTCHES.map((n) => {
           const pt       = bezier(n.frac);
-          const isActive = n.frac >= startFrac && n.frac <= endFrac;
+          const isActive = isFracActive(n.frac);
           const isHov    = hovered?.frac === n.frac;
           const r        = isHov ? 8 : isActive ? 6.5 : 5;
 
@@ -438,7 +459,7 @@ export function ZmanimArcPicker({ startKey, endKey, onChange }: ZmanimArcPickerP
         <div className="min-w-0 text-left">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Starts</p>
           <span className="mt-1 inline-flex max-w-full truncate rounded-full border border-slate-300 bg-white px-2.5 py-1 text-[12px] font-semibold leading-tight text-slate-900 shadow-sm">
-            {startFrac === FIRST_FRAC ? "Any time" : startNotch.label}
+            {isOpenStart ? "Any time" : startNotch.label}
           </span>
         </div>
 
@@ -453,7 +474,7 @@ export function ZmanimArcPicker({ startKey, endKey, onChange }: ZmanimArcPickerP
           ) : (
             <button
               type="button"
-              onClick={() => { setStartFrac(FIRST_FRAC); setEndFrac(LAST_FRAC); }}
+              onClick={() => onChange(null, null)}
               className="text-[11px] font-medium text-slate-500 underline underline-offset-2 transition-colors hover:text-slate-700"
             >
               Reset
@@ -465,7 +486,7 @@ export function ZmanimArcPicker({ startKey, endKey, onChange }: ZmanimArcPickerP
         <div className="min-w-0 text-right">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Ends</p>
           <span className="mt-1 inline-flex max-w-full truncate rounded-full border border-slate-300 bg-white px-2.5 py-1 text-[12px] font-semibold leading-tight text-slate-900 shadow-sm">
-            {endFrac === LAST_FRAC ? "No end" : endNotch.label}
+            {isOpenEnd ? "No end" : endNotch.label}
           </span>
         </div>
       </div>

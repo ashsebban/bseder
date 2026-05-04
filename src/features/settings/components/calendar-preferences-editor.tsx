@@ -4,8 +4,7 @@ import { RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { CalendarLocationField } from "@/features/settings/components/calendar-location-field";
-import type { CalendarPreferences, CalendarTimeFormat, HavdalahOpinion } from "@/features/settings/types/calendar-preferences";
+import type { CalendarPreferences, CalendarTimeFormat } from "@/features/settings/types/calendar-preferences";
 import type { CalendarView } from "@/features/calendar/types/calendar";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
@@ -19,13 +18,6 @@ interface CalendarPreferencesEditorProps {
   title?: string;
   subtitle?: string;
 }
-
-const havdalahOptions: { value: HavdalahOpinion; label: string }[] = [
-  { value: "tzeit-8_5", label: "Tzeit (8.5°)" },
-  { value: "42", label: "42 min" },
-  { value: "50", label: "50 min" },
-  { value: "72", label: "72 min" },
-];
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
@@ -102,17 +94,7 @@ export function CalendarPreferencesEditor({
         </div>
       </div>
 
-      <SectionLabel>Week</SectionLabel>
-      <SelectRow label="Starts on" widthClassName={widthClassName}>
-        <Select
-          className="h-8 w-full rounded-lg px-3 pr-8 text-[12.5px]"
-          value={String(preferences.weekStartsOn)}
-          onChange={(event) => onPreferenceChange("weekStartsOn", Number(event.target.value) as 0 | 1)}
-        >
-          <option value="0">Sunday</option>
-          <option value="1">Monday</option>
-        </Select>
-      </SelectRow>
+      <SectionLabel>Calendar</SectionLabel>
       <SelectRow label="Default view" widthClassName={widthClassName}>
         <Select
           className="h-8 w-full rounded-lg px-3 pr-8 text-[12.5px]"
@@ -125,18 +107,7 @@ export function CalendarPreferencesEditor({
         </Select>
       </SelectRow>
 
-      <SectionLabel>Times & Location</SectionLabel>
-      <div className="border-b border-line/50 py-2">
-        <CalendarLocationField
-          value={{ locationKey: preferences.locationKey, customLocation: preferences.customLocation }}
-          onChange={(next) => {
-            onPreferenceChange("locationKey", next.locationKey);
-            onPreferenceChange("customLocation", next.customLocation);
-          }}
-          variant="compact"
-          allowBlankPreset
-        />
-      </div>
+      <SectionLabel>Times</SectionLabel>
       <SelectRow label="Time format" widthClassName={widthClassName}>
         <Select
           className="h-8 w-full rounded-lg px-3 pr-8 text-[12.5px]"
@@ -145,19 +116,6 @@ export function CalendarPreferencesEditor({
         >
           <option value="12h">12-hour</option>
           <option value="24h">24-hour</option>
-        </Select>
-      </SelectRow>
-      <SelectRow label="Shabbos ends" widthClassName={widthClassName}>
-        <Select
-          className="h-8 w-full rounded-lg px-3 pr-8 text-[12.5px]"
-          value={preferences.havdalahOpinion}
-          onChange={(event) => onPreferenceChange("havdalahOpinion", event.target.value as HavdalahOpinion)}
-        >
-          {havdalahOptions.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
         </Select>
       </SelectRow>
 

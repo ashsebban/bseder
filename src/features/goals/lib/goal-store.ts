@@ -1,6 +1,12 @@
 import { z } from "zod";
 import type { Goal } from "@/features/goals/types/goal";
-import { clearScopedJson, loadScopedJsonArray, saveScopedJson } from "../../../lib/scoped-storage-store";
+import { PREBUILT_GOALS } from "@/features/goals/lib/prebuilt-goals";
+import {
+  clearScopedJson,
+  dispatchScopedStorageEvent,
+  loadScopedJsonArray,
+  saveScopedJson,
+} from "../../../lib/scoped-storage-store";
 
 export const GOALS_STORAGE_UPDATED_EVENT = "goals-storage-updated";
 
@@ -10,59 +16,21 @@ export interface GoalsStorageUpdatedDetail {
 }
 
 function dispatchGoalsStorageUpdated(storageScope: string, goals: Goal[]) {
-  if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent<GoalsStorageUpdatedDetail>(GOALS_STORAGE_UPDATED_EVENT, {
-    detail: { storageScope, goals },
-  }));
+  dispatchScopedStorageEvent<GoalsStorageUpdatedDetail>(
+    GOALS_STORAGE_UPDATED_EVENT,
+    { storageScope, goals },
+  );
 }
 
 // ─── Storage key versioning ──────────────────────────────────────────────────
 // v1 key — bump to v2 if the schema changes in a breaking way and add a migration below.
 const KEY_V1 = "steinberg_goals.v1";
+const LEGACY_FIXED_GOAL_IDS = new Set(["__omer__"]);
 const DEFAULT_FIXED_GOAL_IDS = new Set([
-  // Legacy pack IDs (keep for existing users)
-  "__omer__",
-  "__pack_tefillin__",
-  "__pack_daf_yomi__",
-  "__pack_chanukah__",
-  "__pack_shacharis__",
-  "__pack_mincha__",
-  "__pack_maariv__",
-  "__pack_shema_morning__",
-  "__pack_shema_night__",
-  "__pack_elul_selichot__",
-  "__pack_kotel__",
-  // New prebuilt goal IDs
-  "__pre_bentching__",
-  "__pre_netilat_yadayim__",
-  "__pre_mishnah_yomit__",
-  "__pre_halacha_yomit__",
-  "__pre_parasha__",
-  "__pre_chitas__",
-  "__pre_tehillim__",
-  "__pre_nach_yomi__",
-  "__pre_elul_shofar__",
-  "__pre_arba_minim__",
-  "__pre_mishloach_manot__",
-  "__pre_tashlich__",
-  "__pre_candles__",
-  "__pre_kiddush__",
-  "__pre_havdalah__",
-  "__pre_parshat_hashavua__",
-  "__pre_seudat_shabbos__",
-  "__pre_maaser__",
-  "__pre_tzedakah_daily__",
-  "__pre_volunteer__",
-  "__pre_bikur_cholim__",
-  "__pre_hachnasas_orchim__",
-  "__pre_mezuzot__",
-  "__pre_lulav_esrog__",
-  "__pre_high_holiday_seats__",
-  "__pre_tevilat_keilim__",
-  "__pre_mussar__",
-  "__pre_cheshbon_nefesh__",
-  "__pre_gratitude__",
-  "__pre_shmiras_halashon__",
+  ...LEGACY_FIXED_GOAL_IDS,
+  ...PREBUILT_GOALS
+    .filter((def) => def.buildGoal?.(new Date()).lockInDays)
+    .map((def) => def.id),
 ]);
 
 // ─── Zod schema (mirrors Goal interface) ────────────────────────────────────
@@ -79,12 +47,14 @@ const MilestoneSchema = z.object({
 const GoalSchema = z.object({
   id: z.string(),
   title: z.string(),
-  cadence: z.enum(["one-time", "yearly", "monthly", "weekly", "daily"]),
-  status: z.enum(["ongoing", "done", "paused"]),
+  cadence: z.enum(["one-time", "project", "seasonal", "yearly", "monthly", "weekly", "daily"]),
+  status: z.enum(["ongoing", "done", "paused", "archived", "killed"]),
   type: z.enum(["binary", "quantified"]),
+  measure: z.enum(["binary", "numeric"]).optional(),
   target: z.number().optional(),
   targetUnit: z.string().optional(),
   current: z.number().optional(),
+  dayModel: z.enum(["civil", "jewish"]).optional(),
   completedDates: z.array(z.string()).optional(),
 
   activeDays: z.array(z.string()).optional(),
@@ -95,6 +65,9 @@ const GoalSchema = z.object({
     })
     .optional(),
   ifUnfinished: z.enum(["forgive", "backlog", "track-failure", "kill-streak"]).optional(),
+  onMiss: z.enum(["ignore", "track"]).optional(),
+  carryover: z.enum(["drop", "rollover", "backlog"]).optional(),
+  killOnMiss: z.boolean().optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),
   endAfterPeriods: z.number().optional(),
@@ -105,6 +78,8 @@ const GoalSchema = z.object({
   startsAt: z.string().optional(),
   expiresAt: z.string().optional(),
   programKey: z.enum(["daf-yomi", "omer"]).optional(),
+  source: z.enum(["preset", "preset_modified", "custom", "one_off"]).optional(),
+  presetId: z.string().optional(),
   lockInDays: z.boolean().optional(),
   adhoc: z.boolean().optional(),
   parentGoalId: z.string().optional(),
@@ -118,8 +93,20 @@ function normalizeStarterPackGoal(goal: Goal): Goal {
   return { ...goal, lockInDays: true };
 }
 
+// Migrate legacy ifUnfinished → onMiss + carryover + killOnMiss for goals that predate the refactor.
+function migrateGoalBehavior(goal: Goal): Goal {
+  if (goal.onMiss !== undefined || goal.carryover !== undefined || goal.killOnMiss !== undefined) return goal;
+  switch (goal.ifUnfinished) {
+    case "track-failure": return { ...goal, onMiss: "track",  carryover: "drop" };
+    case "backlog":       return { ...goal, onMiss: "track",  carryover: "backlog" };
+    case "kill-streak":   return { ...goal, onMiss: "track",  carryover: "drop", killOnMiss: true };
+    case "forgive":       return { ...goal, onMiss: "ignore", carryover: "drop" };
+    default:              return goal;
+  }
+}
+
 function normalizeGoals(goals: Goal[]): Goal[] {
-  return goals.map(normalizeStarterPackGoal);
+  return goals.map(normalizeStarterPackGoal).map(migrateGoalBehavior);
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────

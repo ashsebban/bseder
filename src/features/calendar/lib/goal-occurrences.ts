@@ -3,11 +3,13 @@ import type { Goal } from "../../goals/types/goal";
 import { getGoalProgramLabel } from "../../goals/lib/goal-programs";
 import type { DayAssignment } from "../../planner/lib/day-assignment-store";
 import { buildAssignmentDisplayGroups } from "../../planner/lib/day-assignment-groups";
+import { getAssignmentOccurrenceDate, getDateForGoalProgramLabel } from "./goal-day";
 
 interface GoalOccurrenceBase {
   id: string;
   goal: Goal;
   date: string;
+  occurrenceDate: string;
   actionId: string;
   collapsed: boolean;
   completed: boolean;
@@ -27,17 +29,6 @@ export type GoalOccurrence =
       assignment?: never;
     });
 
-export function buildSuppressedAutoShowKeys(dayAssignments: DayAssignment[]): Set<string> {
-  return new Set<string>([
-    ...dayAssignments
-      .filter((assignment) => assignment.replacedAutoDate !== undefined)
-      .map((assignment) => `${assignment.goalId}:${assignment.replacedAutoDate}`),
-    ...dayAssignments
-      .filter((assignment) => assignment.skipped === true)
-      .map((assignment) => `${assignment.goalId}:${assignment.date}`),
-  ]);
-}
-
 export function buildGoalOccurrencesForDate({
   date,
   goals,
@@ -46,7 +37,6 @@ export function buildGoalOccurrencesForDate({
   date: Date;
   goals: Goal[];
   dayAssignments: DayAssignment[];
-  excludedByGoal: Map<string, Set<string>>;
 }): GoalOccurrence[] {
   const goalsById = new Map(goals.map((goal) => [goal.id, goal]));
   const assignmentsForDay = dayAssignments.filter(
@@ -57,20 +47,26 @@ export function buildGoalOccurrencesForDate({
   for (const group of buildAssignmentDisplayGroups(assignmentsForDay)) {
     const goal = goalsById.get(group.representative.goalId);
     if (!goal) continue;
+    const occurrenceDate = getAssignmentOccurrenceDate(group.representative);
     assignmentOccurrences.push({
       id: group.id,
       goal,
       date: toIsoDate(date),
+      occurrenceDate,
       source: "assignment",
       assignment: group.representative,
       actionId: group.id,
       collapsed: group.collapsed,
       completed: group.assignments.every((assignment) => assignment.completed),
       displayAmount: group.totalAmount,
-      programLabel: getGoalProgramLabel(goal, date),
+      programLabel: getOccurrenceProgramLabel(goal, occurrenceDate),
     });
   }
   return assignmentOccurrences;
+}
+
+function getOccurrenceProgramLabel(goal: Goal, occurrenceDate: string): string | null {
+  return getGoalProgramLabel(goal, getDateForGoalProgramLabel(goal, occurrenceDate));
 }
 
 export function sortGoalOccurrences(

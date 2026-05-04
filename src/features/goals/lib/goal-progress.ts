@@ -1,10 +1,11 @@
-import { HebrewCalendar, HDate, flags } from "@hebcal/core";
+import { HebrewCalendar, HDate, months, flags } from "@hebcal/core";
 import { parseIsoDate, toIsoDate, todayIso, startOfDay, startOfWeek, endOfWeek, startOfMonth, addDays } from "@/lib/date";
 import type { Goal, GoalCadence } from "@/features/goals/types/goal";
 import { computePeriodKey } from "@/features/planner/lib/period-key";
 import type { DayAssignment } from "@/features/planner/lib/day-assignment-store";
 import { DAY_KEYS, type DayKey, getApplicableGoalsForDate } from "@/features/goals/lib/goal-applicability";
 import { getGoalProgramLabel } from "@/features/goals/lib/goal-programs";
+import { getAssignmentOccurrenceDate, getGoalDayModel, getGoalOccurrenceDateForPlannerDate, todayJewishIso } from "@/features/calendar/lib/goal-day";
 
 export { DAY_KEYS, getApplicableGoalsForDate };
 export type { DayKey };
@@ -51,6 +52,25 @@ export interface RollupProgress {
   missed: number;
   total: number;
   elapsed: number;
+}
+
+// ─── Behavior helpers (new fields with ifUnfinished fallback) ────────────────
+
+export function effectiveOnMiss(goal: Goal): "ignore" | "track" {
+  if (goal.onMiss) return goal.onMiss;
+  if (goal.ifUnfinished === "track-failure" || goal.ifUnfinished === "backlog" || goal.ifUnfinished === "kill-streak") return "track";
+  return "ignore";
+}
+
+export function effectiveKillOnMiss(goal: Goal): boolean {
+  if (goal.killOnMiss !== undefined) return goal.killOnMiss;
+  return goal.ifUnfinished === "kill-streak";
+}
+
+export function effectiveCarryover(goal: Goal): "drop" | "rollover" | "backlog" {
+  if (goal.carryover) return goal.carryover;
+  if (goal.ifUnfinished === "backlog") return "backlog";
+  return "drop";
 }
 
 /**
@@ -172,31 +192,52 @@ export function computeRollupProgress(
     );
     if (dayAssignments) {
       for (const a of dayAssignments) {
-        if (a.goalId === goal.id && a.completed && a.date >= effectiveStartIso && a.date < periodEndIso) {
-          doneSet.add(a.date);
+        const occurrenceDate = getAssignmentOccurrenceDate(a);
+        if (a.goalId === goal.id && a.completed && occurrenceDate >= effectiveStartIso && occurrenceDate < periodEndIso) {
+          doneSet.add(occurrenceDate);
         }
       }
     }
     done = doneSet.size;
   } else if (dayAssignments !== undefined) {
-    const periodKey = computePeriodKey(goal.cadence, periodStart);
-    const manualDone = dayAssignments
-      .filter((a) => a.goalId === goal.id && a.periodKey === periodKey && a.completed)
-      .reduce((sum, a) => sum + (a.targetAmount ?? 1), 0);
-    // Also count completedDates entries for auto-show preferred days not covered by a manual assignment
-    const manualDates = new Set(
-      dayAssignments.filter((a) => a.goalId === goal.id && a.periodKey === periodKey).map((a) => a.date),
-    );
-    const autoShowDone = (goal.completedDates ?? []).filter(
-      (d) => d >= effectiveStartIso && d < periodEndIso && !manualDates.has(d),
-    ).length;
-    done = manualDone + autoShowDone;
+    const isJewish = getGoalDayModel(goal) === "jewish";
+    if (isJewish) {
+      // For Jewish-calendar goals, match assignments by occurrenceDate falling in the period
+      // bounds instead of by Gregorian periodKey, since the period bounds are Hebrew-calendar-derived.
+      const inPeriod = (a: DayAssignment) => {
+        const occ = getAssignmentOccurrenceDate(a);
+        return a.goalId === goal.id && occ >= effectiveStartIso && occ < periodEndIso;
+      };
+      const manualDone = dayAssignments
+        .filter((a) => inPeriod(a) && a.completed)
+        .reduce((sum, a) => sum + (a.targetAmount ?? 1), 0);
+      const manualOccurrences = new Set(
+        dayAssignments.filter(inPeriod).map((a) => getAssignmentOccurrenceDate(a)),
+      );
+      const autoShowDone = (goal.completedDates ?? []).filter(
+        (d) => d >= effectiveStartIso && d < periodEndIso && !manualOccurrences.has(d),
+      ).length;
+      done = manualDone + autoShowDone;
+    } else {
+      const periodKey = computePeriodKey(goal.cadence, periodStart);
+      const manualDone = dayAssignments
+        .filter((a) => a.goalId === goal.id && a.periodKey === periodKey && a.completed)
+        .reduce((sum, a) => sum + (a.targetAmount ?? 1), 0);
+      // Also count completedDates entries for auto-show preferred days not covered by a manual assignment
+      const manualDates = new Set(
+        dayAssignments.filter((a) => a.goalId === goal.id && a.periodKey === periodKey).map((a) => a.date),
+      );
+      const autoShowDone = (goal.completedDates ?? []).filter(
+        (d) => d >= effectiveStartIso && d < periodEndIso && !manualDates.has(d),
+      ).length;
+      done = manualDone + autoShowDone;
+    }
   } else {
     done = Math.min(goal.current ?? 0, total);
   }
 
   let missed = 0;
-  if (goal.ifUnfinished === "track-failure") {
+  if (effectiveOnMiss(goal) === "track") {
     missed = Math.max(0, elapsed - done);
   }
 
@@ -233,10 +274,11 @@ export function computeDailyQuantifiedUnitsRollup(
   if (dayAssignments) {
     for (const assignment of dayAssignments) {
       if (assignment.goalId !== goal.id || !assignment.completed) continue;
-      if (assignment.date < effectiveStartIso || assignment.date >= periodEndIso) continue;
+      const occurrenceDate = getAssignmentOccurrenceDate(assignment);
+      if (occurrenceDate < effectiveStartIso || occurrenceDate >= periodEndIso) continue;
       completedUnitsByDate.set(
-        assignment.date,
-        (completedUnitsByDate.get(assignment.date) ?? 0) + (assignment.targetAmount ?? dailyTarget),
+        occurrenceDate,
+        (completedUnitsByDate.get(occurrenceDate) ?? 0) + (assignment.targetAmount ?? dailyTarget),
       );
     }
   }
@@ -253,7 +295,7 @@ export function computeDailyQuantifiedUnitsRollup(
     doneUnits = Math.min(goal.current ?? 0, dayRollup.total * dailyTarget);
   }
 
-  const missedUnits = goal.ifUnfinished === "track-failure"
+  const missedUnits = effectiveOnMiss(goal) === "track"
     ? Math.max(0, dayRollup.elapsed * dailyTarget - doneUnits)
     : dayRollup.missed * dailyTarget;
 
@@ -300,10 +342,14 @@ export function computeDayProgress(
     // assignment toggle (which updates assignment.completed) vs the daily checklist toggle
     // (which updates completedDates directly).
     const doneViaCompletedDates = goal.completedDates?.includes(dateIso) ?? false;
-    const doneViaAssignment = dayAssignments?.some((a) => a.goalId === goal.id && a.date === dateIso && a.completed) ?? false;
+    const doneViaAssignment = dayAssignments?.some((a) => (
+      a.goalId === goal.id &&
+      getAssignmentOccurrenceDate(a) === dateIso &&
+      a.completed
+    )) ?? false;
     if (doneViaCompletedDates || doneViaAssignment) {
       completed++;
-    } else if (isPast && goal.ifUnfinished === "track-failure") {
+    } else if (isPast && effectiveOnMiss(goal) === "track") {
       missed++;
     }
   }
@@ -312,6 +358,31 @@ export function computeDayProgress(
 }
 
 // ─── Period Bounds ──────────────────────────────────────────────────────────
+
+/**
+ * Start and end of the Hebrew month containing `ref` (end exclusive).
+ * Uses HDate to compute the Gregorian dates of 1st and last day of the Hebrew month.
+ */
+export function hebrewMonthBounds(ref: Date): { start: Date; end: Date } {
+  const hdate = new HDate(ref);
+  const year = hdate.getFullYear();
+  const month = hdate.getMonth();
+  const start = startOfDay(new HDate(1, month, year).greg());
+  const lastDay = HDate.daysInMonth(month, year);
+  const end = addDays(startOfDay(new HDate(lastDay, month, year).greg()), 1);
+  return { start, end };
+}
+
+/**
+ * Start and end of the Hebrew year containing `ref` (end exclusive).
+ * Hebrew years run from 1 Tishrei to 29 Elul.
+ */
+export function hebrewYearBounds(ref: Date): { start: Date; end: Date } {
+  const year = new HDate(ref).getFullYear();
+  const start = startOfDay(new HDate(1, months.TISHREI, year).greg());
+  const end = startOfDay(new HDate(1, months.TISHREI, year + 1).greg());
+  return { start, end };
+}
 
 /** Start and end of today (end is exclusive midnight of next day) */
 export function currentDayBounds(): { start: Date; end: Date } {
@@ -344,8 +415,19 @@ export function currentYearBounds(): { start: Date; end: Date } {
 
 // ─── Domain Pure Functions (moved from UI components) ───────────────────────
 
-/** Map a cadence to its current period bounds. Used for roll-up progress computation. */
-export function getPeriodBoundsForCadence(cadence: GoalCadence): { start: Date; end: Date } {
+/**
+ * Map a cadence to its current period bounds.
+ * Pass `goal` to get Hebrew calendar bounds for Jewish-calendar goals.
+ */
+export function getPeriodBoundsForCadence(
+  cadence: GoalCadence,
+  goal?: Pick<Goal, "id" | "programKey" | "dayModel">,
+): { start: Date; end: Date } {
+  if (goal && getGoalDayModel(goal) === "jewish") {
+    const today = new Date();
+    if (cadence === "monthly") return hebrewMonthBounds(today);
+    if (cadence === "yearly") return hebrewYearBounds(today);
+  }
   switch (cadence) {
     case "daily":   return currentDayBounds();
     case "weekly":  return currentWeekBounds();
@@ -356,13 +438,18 @@ export function getPeriodBoundsForCadence(cadence: GoalCadence): { start: Date; 
 }
 
 /**
- * Same as getPeriodBoundsForCadence but resolves relative to an arbitrary reference date
- * instead of always using today. Used for navigation-aware cross-period rollup.
+ * Same as getPeriodBoundsForCadence but resolves relative to an arbitrary reference date.
+ * Pass `goal` to get Hebrew calendar bounds for Jewish-calendar goals.
  */
 export function getPeriodBoundsForCadenceAndDate(
   cadence: GoalCadence,
   ref: Date,
+  goal?: Pick<Goal, "id" | "programKey" | "dayModel">,
 ): { start: Date; end: Date } {
+  if (goal && getGoalDayModel(goal) === "jewish") {
+    if (cadence === "monthly") return hebrewMonthBounds(ref);
+    if (cadence === "yearly") return hebrewYearBounds(ref);
+  }
   switch (cadence) {
     case "daily": {
       const s = startOfDay(ref);
@@ -455,14 +542,14 @@ export function computeCrossperiodProgress(
           (
             assignment.periodKey === pk ||
             (assignment.periodKey === undefined &&
-              assignment.date >= bounds.startIso &&
-              assignment.date < bounds.endIso)
+              getAssignmentOccurrenceDate(assignment) >= bounds.startIso &&
+              getAssignmentOccurrenceDate(assignment) < bounds.endIso)
           ),
       );
       const manualDone = pkAssignments
         .filter((assignment) => assignment.completed)
         .reduce((sum, assignment) => sum + (assignment.targetAmount ?? 1), 0);
-      const manualDates = new Set(pkAssignments.map((assignment) => assignment.date));
+      const manualDates = new Set(pkAssignments.map((assignment) => getAssignmentOccurrenceDate(assignment)));
       const autoShowDone = (goal.completedDates ?? []).filter(
         (dateIso) => dateIso >= bounds.startIso && dateIso < bounds.endIso && !manualDates.has(dateIso),
       ).length;
@@ -489,17 +576,23 @@ export function computeCurrentStreak(goal: Goal, today: Date): number {
   const completed = new Set(goal.completedDates ?? []);
   const activeDayKeys: string[] = goal.activeDays ?? [...DAY_KEYS];
 
+  // For Jewish-calendar goals, "today" is the current Hebrew day.
+  // After nightfall the Hebrew day has already turned over, so we advance today by 1.
+  const effectiveToday = getGoalDayModel(goal) === "jewish"
+    ? (parseIsoDate(todayJewishIso()) ?? today)
+    : today;
+
   // Build a 2-year exclusion window to cover long streaks
-  const rangeStart = new Date(today.getFullYear() - 2, 0, 1);
+  const rangeStart = new Date(effectiveToday.getFullYear() - 2, 0, 1);
   const excluded = buildExcludedDates(
     rangeStart,
-    today,
+    effectiveToday,
     goal.excludes?.categories ?? [],
     goal.excludes?.individual ?? [],
   );
 
   let streak = 0;
-  const cursor = new Date(today);
+  const cursor = new Date(effectiveToday);
   cursor.setDate(cursor.getDate() - 1);
 
   for (let i = 0; i < 730; i++) {
@@ -576,7 +669,7 @@ export function computeBestStreak(goals: Goal[], today: Date): GoalStreakSummary
  * no previous applicable day exists (first day of the goal).
  */
 export function wasStreakBrokenBefore(goal: Goal, date: Date): boolean {
-  if (goal.ifUnfinished !== "kill-streak" || goal.type !== "binary" || goal.cadence !== "daily") {
+  if (!effectiveKillOnMiss(goal) || goal.type !== "binary" || goal.cadence !== "daily") {
     return false;
   }
   const completed = new Set(goal.completedDates ?? []);
@@ -621,7 +714,7 @@ export function buildGoalDetailText(goal: Goal, referenceDate: Date = new Date()
 
   if (goal.type === "binary") {
     if (goal.cadence === "daily" && goal.completedDates !== undefined) {
-      const today = todayIso(); // local time — no UTC shift
+      const today = getGoalOccurrenceDateForPlannerDate(goal, todayIso(), { now: new Date() });
       parts.push(goal.completedDates.includes(today) ? "Done today" : "Not yet today");
     } else {
       const statusLabel = goal.current && goal.current > 0 ? "done" : "not done";

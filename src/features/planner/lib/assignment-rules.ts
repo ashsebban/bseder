@@ -1,14 +1,42 @@
-import { endOfMonth, endOfWeek, startOfMonth, startOfWeek, toIsoDate } from "@/lib/date";
+import { HDate } from "@hebcal/core";
+import { endOfMonth, endOfWeek, parseIsoDate, startOfMonth, startOfWeek, toIsoDate } from "@/lib/date";
 import { DAY_KEYS } from "@/features/goals/lib/goal-applicability";
 import type { Goal } from "@/features/goals/types/goal";
 import type { DayAssignment } from "@/features/planner/lib/day-assignment-store";
 import { computePeriodKey } from "@/features/planner/lib/period-key";
+import { getAssignmentOccurrenceDate, getGoalDayModel } from "@/features/calendar/lib/goal-day";
 
 export function isAssignmentInSelectedPeriod(
   goal: Goal,
   assignment: DayAssignment,
   selectedDate: Date,
 ): boolean {
+  if (getGoalDayModel(goal) === "jewish") {
+    // For Jewish-calendar goals, compare occurrenceDate (the Hebrew day) against the
+    // Hebrew period of selectedDate.
+    const occDate = parseIsoDate(getAssignmentOccurrenceDate(assignment));
+    if (!occDate) return false;
+    switch (goal.cadence) {
+      case "daily":
+        return getAssignmentOccurrenceDate(assignment) === toIsoDate(selectedDate);
+      case "weekly":
+        // Sunday-start week of occurrenceDate vs selectedDate (user decision: keep Gregorian week key)
+        return toIsoDate(startOfWeek(occDate)) === toIsoDate(startOfWeek(selectedDate));
+      case "monthly": {
+        const hOcc = new HDate(occDate);
+        const hSel = new HDate(selectedDate);
+        return hOcc.getFullYear() === hSel.getFullYear() && hOcc.getMonth() === hSel.getMonth();
+      }
+      case "yearly": {
+        const hOcc = new HDate(occDate);
+        const hSel = new HDate(selectedDate);
+        return hOcc.getFullYear() === hSel.getFullYear();
+      }
+      default:
+        return true;
+    }
+  }
+
   const currentPeriodKey = computePeriodKey(goal.cadence, selectedDate);
 
   if (currentPeriodKey && assignment.periodKey !== undefined) {

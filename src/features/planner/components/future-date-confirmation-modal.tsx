@@ -1,4 +1,4 @@
-import { PlannerModalCard } from "@/components/planner/planner-modal-card";
+import { PlannerModalCard } from "@/features/planner/components/planner-modal-card";
 
 export function FutureDateConfirmationModal({
   goalTitle,

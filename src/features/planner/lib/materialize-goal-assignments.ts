@@ -1,12 +1,22 @@
 import { addDays, endOfWeek, startOfWeek, toIsoDate } from "../../../lib/date";
-import { getApplicableGoalsForDate, isGoalApplicableOnDate } from "../../goals/lib/goal-applicability";
+import {
+  getAssignmentOccurrenceDate,
+  getGoalDayModel,
+  getGoalOccurrenceDateForPlannerDate,
+} from "../../calendar/lib/goal-day";
+import { isGoalApplicableOnDate } from "../../goals/lib/goal-applicability";
 import type { Goal } from "../../goals/types/goal";
 import { suggestedAssignmentAmount } from "../../calendar/lib/assignment-actions";
-import { createDayAssignmentId, type DayAssignment } from "./day-assignment-store";
+import type { DayZmanim } from "../../calendar/lib/zmanim";
+import type { DayAssignment } from "./day-assignment-store";
 import { computePeriodKey } from "./period-key";
 
-function occurrenceKey(goalId: string, isoDate: string): string {
-  return `${goalId}:${isoDate}`;
+function generatedAssignmentId(goalId: string, isoDate: string): string {
+  return `generated:${goalId}:${isoDate}`;
+}
+
+function displayKey(goalId: string, plannerDate: string, occurrenceDate: string): string {
+  return `${goalId}:${plannerDate}:${occurrenceDate}`;
 }
 
 function isRuleOwnedGeneratedAssignment(
@@ -31,10 +41,56 @@ export function materializePlannerWeekAssignments(
   existingAssignments: DayAssignment[],
   selectedDate: Date,
   excludedByGoal: Map<string, Set<string>>,
+  options: {
+    now?: Date;
+    getZmanimForDate?: (isoDate: string) => DayZmanim | null;
+  } = {},
 ): DayAssignment[] {
   const weekStart = startOfWeek(selectedDate);
   const weekEnd = endOfWeek(selectedDate);
   const goalsById = new Map(goals.map((goal) => [goal.id, goal]));
+  const todayIso = options.now ? toIsoDate(options.now) : null;
+  const zmanimByDate = new Map<string, DayZmanim | null | undefined>();
+  const getZmanimForGoalDate = (goal: Goal, isoDate: string) => {
+    if (getGoalDayModel(goal) !== "jewish") return undefined;
+    if (!zmanimByDate.has(isoDate)) {
+      zmanimByDate.set(isoDate, options.getZmanimForDate?.(isoDate));
+    }
+    return zmanimByDate.get(isoDate);
+  };
+  const getOccurrenceDateForPlannerSlot = (
+    goal: Goal,
+    isoDate: string,
+    scheduledTime?: string,
+  ) => getGoalOccurrenceDateForPlannerDate(goal, isoDate, {
+    // Generated rows must be stable for the whole planner week. Only real
+    // scheduled/completed times should move a Jewish-day goal after nightfall.
+    scheduledTime,
+    zmanim: getZmanimForGoalDate(goal, isoDate),
+  });
+  const getGenerationOccurrenceKey = (assignment: DayAssignment) => {
+    const goal = goalsById.get(assignment.goalId);
+    if (!goal) return displayKey(assignment.goalId, assignment.date, getAssignmentOccurrenceDate(assignment));
+    const occurrenceDate = assignment.occurrenceDate ?? getOccurrenceDateForPlannerSlot(
+      goal,
+      assignment.date,
+      assignment.scheduledTime ?? assignment.completedAt,
+    );
+    return displayKey(assignment.goalId, assignment.date, occurrenceDate);
+  };
+  const getReplacedOccurrenceKey = (assignment: DayAssignment) => {
+    const replacedAutoDate = assignment.replacedAutoDate;
+    if (!replacedAutoDate) return null;
+    const goal = goalsById.get(assignment.goalId);
+    const occurrenceDate = goal
+      ? getOccurrenceDateForPlannerSlot(goal, replacedAutoDate)
+      : replacedAutoDate;
+    return displayKey(assignment.goalId, replacedAutoDate, occurrenceDate);
+  };
+  const getPrimaryGeneratedAssignmentId = (goal: Goal, isoDate: string) =>
+    generatedAssignmentId(goal.id, isoDate);
+  const getPrimaryOccurrenceDate = (goal: Goal, isoDate: string) =>
+    getOccurrenceDateForPlannerSlot(goal, isoDate);
   let changed = false;
   const normalizedAssignments = existingAssignments.flatMap((assignment) => {
     if (!assignment.generated) return [assignment];
@@ -49,7 +105,12 @@ export function materializePlannerWeekAssignments(
       }
       return [assignment];
     }
-    const stillApplicable = isGoalApplicableOnDate(goal, assignmentDate, {
+    const occurrenceDate = getOccurrenceDateForPlannerSlot(
+      goal,
+      assignment.date,
+      assignment.scheduledTime ?? assignment.completedAt,
+    );
+    const stillApplicable = isGoalApplicableOnDate(goal, occurrenceDate, {
       excludedByGoal,
       mode: "auto",
     });
@@ -58,14 +119,15 @@ export function materializePlannerWeekAssignments(
       return [];
     }
     const expectedAmount = goal.type === "quantified" ? suggestedAssignmentAmount(goal) : undefined;
-    const expectedPeriodKey = computePeriodKey(goal.cadence, assignmentDate);
-    const expectedCompleted = goal.completedDates?.includes(assignment.date) ?? false;
+    const expectedPeriodKey = computePeriodKey(goal.cadence, new Date(`${occurrenceDate}T00:00:00`));
+    const expectedCompleted = goal.completedDates?.includes(occurrenceDate) ?? false;
     if (
       isRuleOwnedGeneratedAssignment(assignment, { allowCompleted: true }) &&
       (
         assignment.targetAmount !== expectedAmount ||
         assignment.periodKey !== expectedPeriodKey ||
-        assignment.completed !== expectedCompleted
+        assignment.completed !== expectedCompleted ||
+        getAssignmentOccurrenceDate(assignment) !== occurrenceDate
       )
     ) {
       changed = true;
@@ -74,6 +136,7 @@ export function materializePlannerWeekAssignments(
         targetAmount: expectedAmount,
         periodKey: expectedPeriodKey,
         completed: expectedCompleted,
+        occurrenceDate: occurrenceDate === assignment.date ? undefined : occurrenceDate,
         completedAt: expectedCompleted ? assignment.completedAt : undefined,
       }];
     }
@@ -82,43 +145,47 @@ export function materializePlannerWeekAssignments(
   const existingOccurrenceKeys = new Set(
     normalizedAssignments
       .filter((assignment) => !assignment.skipped)
-      .map((assignment) => occurrenceKey(assignment.goalId, assignment.date)),
+      .map(getGenerationOccurrenceKey),
   );
   const skippedOccurrenceKeys = new Set(
     normalizedAssignments
       .filter((assignment) => assignment.skipped)
-      .map((assignment) => occurrenceKey(assignment.goalId, assignment.date)),
+      .map(getGenerationOccurrenceKey),
   );
   const replacedOccurrenceKeys = new Set(
     normalizedAssignments
       .filter((assignment) => assignment.replacedAutoDate !== undefined)
-      .map((assignment) => occurrenceKey(assignment.goalId, assignment.replacedAutoDate!)),
+      .map(getReplacedOccurrenceKey)
+      .filter((key): key is string => key !== null),
   );
 
   const additions: DayAssignment[] = [];
   for (let cursor = weekStart; cursor <= weekEnd; cursor = addDays(cursor, 1)) {
     const isoDate = toIsoDate(cursor);
-    const applicableGoals = getApplicableGoalsForDate(goals, cursor, excludedByGoal);
-    for (const goal of applicableGoals) {
-      const key = occurrenceKey(goal.id, isoDate);
-      if (
-        existingOccurrenceKeys.has(key) ||
-        skippedOccurrenceKeys.has(key) ||
-        replacedOccurrenceKeys.has(key)
-      ) {
-        continue;
+    for (const goal of goals) {
+      const occurrenceDate = getPrimaryOccurrenceDate(goal, isoDate);
+      if (isGoalApplicableOnDate(goal, occurrenceDate, { excludedByGoal, mode: "auto" })) {
+        const key = displayKey(goal.id, isoDate, occurrenceDate);
+        if (
+          !existingOccurrenceKeys.has(key) &&
+          !skippedOccurrenceKeys.has(key) &&
+          !replacedOccurrenceKeys.has(key)
+        ) {
+          additions.push({
+            id: getPrimaryGeneratedAssignmentId(goal, isoDate),
+            goalId: goal.id,
+            date: isoDate,
+            occurrenceDate: occurrenceDate === isoDate ? undefined : occurrenceDate,
+            completed: goal.completedDates?.includes(occurrenceDate) ?? false,
+            targetAmount: goal.type === "quantified" ? suggestedAssignmentAmount(goal) : undefined,
+            periodKey: computePeriodKey(goal.cadence, new Date(`${occurrenceDate}T00:00:00`)),
+            generated: true,
+          });
+          changed = true;
+          existingOccurrenceKeys.add(key);
+        }
       }
-      additions.push({
-        id: createDayAssignmentId(),
-        goalId: goal.id,
-        date: isoDate,
-        completed: goal.completedDates?.includes(isoDate) ?? false,
-        targetAmount: goal.type === "quantified" ? suggestedAssignmentAmount(goal) : undefined,
-        periodKey: computePeriodKey(goal.cadence, cursor),
-        generated: true,
-      });
-      changed = true;
-      existingOccurrenceKeys.add(key);
+
     }
   }
 

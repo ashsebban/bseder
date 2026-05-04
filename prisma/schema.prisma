@@ -1,5 +1,10 @@
-// B'Seder — Prisma Schema
+// B'Seder — Prisma Schema v2
 // ORM: Prisma 5  |  DB: MySQL (Railway)
+// utf8mb4 throughout for Hebrew character support
+//
+// Core principle:
+//   Goals are RULES.  Assignments are OCCURRENCES.
+//   Completion state lives on assignments, never on goals.
 
 generator client {
   provider = "prisma-client-js"
@@ -11,16 +16,13 @@ datasource db {
 }
 
 // ─── Users ────────────────────────────────────────────────────────────────────
-// One row per account. isAdmin is set manually in the DB for the owner.
-// subscriptionStatus is a cached field — updated by the Stripe webhook.
-// deletedAt = soft delete; the row is never physically removed.
 model User {
-  id                 String    @id @default(uuid())
-  email              String    @unique
+  id                 String    @id @default(uuid()) @db.Char(36)
+  email              String    @unique @db.VarChar(320)
   displayName        String?   @db.VarChar(100)
-  passwordHash       String?   @db.VarChar(255)  // null = OAuth-only account
+  passwordHash       String?   @db.VarChar(255)
   avatarUrl          String?   @db.VarChar(500)
-  subscriptionStatus String    @default("free")  // "free" | "pro"
+  subscriptionStatus String    @default("free") @db.VarChar(20)
   isAdmin            Boolean   @default(false)
   onboardingComplete Boolean   @default(false)
   referralSource     String?   @db.VarChar(100)
@@ -28,26 +30,23 @@ model User {
   updatedAt          DateTime  @updatedAt
   deletedAt          DateTime?
 
-  // NextAuth relations
   accounts    Account[]
   sessions    Session[]
-
-  // App relations
   preferences UserPreferences?
   adminEvents AdminEvent[]
-  goals       GoalRecord[]
-  assignments AssignmentRecord[]
+  goals       Goal[]
+  assignments Assignment[]
 
+  @@index([deletedAt])
   @@map("users")
 }
 
 // ─── NextAuth: OAuth Accounts ─────────────────────────────────────────────────
-// Stores Google OAuth tokens. One user can have multiple OAuth accounts.
 model Account {
-  id                String  @id @default(uuid())
-  userId            String
-  type              String  // "oauth" | "email" | "credentials"
-  provider          String  // "google" | "credentials"
+  id                String  @id @default(uuid()) @db.Char(36)
+  userId            String  @db.Char(36)
+  type              String
+  provider          String
   providerAccountId String
   refresh_token     String? @db.Text
   access_token      String? @db.Text
@@ -64,11 +63,10 @@ model Account {
 }
 
 // ─── NextAuth: Sessions ───────────────────────────────────────────────────────
-// One row per active browser session. Pruned by NextAuth on access.
 model Session {
-  id           String   @id @default(uuid())
+  id           String   @id @default(uuid()) @db.Char(36)
   sessionToken String   @unique
-  userId       String
+  userId       String   @db.Char(36)
   expires      DateTime
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -77,7 +75,6 @@ model Session {
 }
 
 // ─── NextAuth: Verification Tokens ───────────────────────────────────────────
-// Used for email magic-link and password reset tokens.
 model VerificationToken {
   identifier String
   token      String   @unique
@@ -88,24 +85,28 @@ model VerificationToken {
 }
 
 // ─── User Preferences ─────────────────────────────────────────────────────────
-// Calendar display settings. 1:1 with users.
-// Created during onboarding; updated in Settings → Calendar.
 model UserPreferences {
-  userId                      String   @id
-  locationKey                 String   @default("new-york") // matches preset location key
-  timeFormat                  String   @default("12h")       // "12h" | "24h"
+  userId                      String   @id @db.Char(36)
+  locationKey                 String   @default("los-angeles-ca") @db.VarChar(64)
+  timeFormat                  String   @default("12h") @db.VarChar(3)
   showHebrewDates             Boolean  @default(true)
-  weekStartsOn                Int      @default(0)           // 0 = Sun, 1 = Mon
-  defaultView                 String   @default("week")      // "month" | "week" | "day"
+  weekStartsOn                Int      @default(0)
+  defaultView                 String   @default("week") @db.VarChar(10)
   showParsha                  Boolean  @default(true)
   showRoshChodesh             Boolean  @default(true)
   showOmer                    Boolean  @default(true)
   showModernHolidays          Boolean  @default(false)
   showOutsideMonthDays        Boolean  @default(true)
-  havdalahOpinion             String   @default("tzeit-8_5")
-  observanceLevel             String   @default("unknown") // "shabbos" | "not-shabbos" | "mixed" | "unknown"
+  havdalahOpinion             String   @default("tzeit-8_5") @db.VarChar(20)
+  havdalahMode                String   @default("nusach") @db.VarChar(20)
+  nusach                      String   @default("ashkenaz") @db.VarChar(20)
+  observanceLevel             String   @default("unknown") @db.VarChar(20)
   timelineSnapMins            Int      @default(15)
   timelineDefaultDurationMins Int      @default(30)
+  showHebrewDatesOnGoals      Boolean  @default(false)
+  hebrewDateFormat            String   @default("english") @db.VarChar(10)
+  hebrewDateIncludeYear       Boolean  @default(false)
+  hebrewMode                  Boolean  @default(false)  // ★ Hebrew/Gregorian week toggle
   updatedAt                   DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -113,114 +114,399 @@ model UserPreferences {
   @@map("user_preferences")
 }
 
+// ─── Goal Presets ★ NEW ───────────────────────────────────────────────────────
+// Catalog of curated goals: Tefillin, Daf Yomi, Havdalah, Shacharis, etc.
+// When a user adds a preset, a Goal row is created with source="preset"
+// and presetId pointing here. Editing it flips source to "preset_modified".
+model GoalPreset {
+  id          String  @id @default(uuid()) @db.Char(36)
+  slug        String  @unique @db.VarChar(80)
+  title       String  @db.VarChar(200)
+  description String? @db.Text
+  emoji       String? @db.VarChar(8)
+
+  cadence           String  @db.VarChar(20)
+  measure           String  @db.VarChar(10)
+  failureMode       String  @db.VarChar(20)
+  dayModel          String? @db.VarChar(10)
+  startsAtDefault   String? @db.VarChar(100)
+  expiresAtDefault  String? @db.VarChar(100)
+  targetDefault     Int?
+  targetUnitDefault String? @db.VarChar(100)
+  exclusionsDefault Json?   // string[] of holiday keys
+  activeDaysDefault Json?   // int[] of day-of-week (0=Sun..6=Sat)
+  seasonalRule      Json?   // e.g. { start: "16 Nisan", endRule: "+49 days" }
+
+  isPublished Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  goals Goal[]
+
+  @@index([isPublished, sortOrder])
+  @@map("goal_presets")
+}
+
+// ─── Hebcal Day Cache ★ NEW ───────────────────────────────────────────────────
+// Caches @hebcal/core output per (locationKey, gregorianDate).
+// Multiple users in the same city share one row per day.
+model HebcalDayCache {
+  id            String   @id @default(uuid()) @db.Char(36)
+  locationKey   String   @db.VarChar(64)
+  gregorianDate DateTime @db.Date
+
+  // Denormalized for fast queries without unpacking JSON
+  hebrewYear    Int
+  hebrewMonth   Int      // 1..13 (Adar II = 13)
+  hebrewDay     Int      // 1..30
+  hebrewDateStr String   @db.VarChar(40)
+  isShabbat     Boolean  @default(false)
+  isYomTov      Boolean  @default(false)
+  isCholHamoed  Boolean  @default(false)
+  isRoshChodesh Boolean  @default(false)
+  isFastDay     Boolean  @default(false)
+  parsha        String?  @db.VarChar(80)
+  omerDay       Int?     // 1..49 during Omer; null otherwise
+
+  // Full @hebcal/core payload: zmanim{}, events[], candles{}, havdalah{}, etc.
+  payload   Json
+  fetchedAt DateTime @default(now())
+  expiresAt DateTime
+
+  @@unique([locationKey, gregorianDate])
+  @@index([gregorianDate])
+  @@index([expiresAt])
+  @@map("hebcal_day_cache")
+}
+
 // ─── Goals ────────────────────────────────────────────────────────────────────
-model GoalRecord {
-  id                 String    @id @default(uuid())
-  userId             String    @map("user_id")
-  parentGoalId       String?   @map("parent_goal_id")
-  title              String    @db.VarChar(500)
-  cadence            String
-  status             String    @default("ongoing")
-  type               String
-  target             Int?
-  targetUnit         String?   @map("target_unit") @db.VarChar(100)
-  backlog            Int       @default(0)
-  noGettingAhead     Boolean   @default(false) @map("no_getting_ahead")
-  ifUnfinished       String?   @map("if_unfinished")
-  preferredMonthDay  String?   @map("preferred_month_day") @db.VarChar(10)
-  lockInDays         Boolean   @default(false) @map("lock_in_days")
-  adhoc              Boolean   @default(false)
-  startsAt           String?   @map("starts_at") @db.VarChar(100)
-  expiresAt          String?   @map("expires_at") @db.VarChar(100)
-  startDate          DateTime? @map("start_date") @db.Date
-  endDate            DateTime? @map("end_date") @db.Date
-  dueDate            DateTime? @map("due_date") @db.Date
-  endAfterPeriods    Int?      @map("end_after_periods")
-  programKey         String?   @map("program_key") @db.VarChar(50)
-  excludesCategories String?   @map("excludes_categories") @db.Text
-  createdAt          DateTime  @default(now()) @map("created_at")
-  updatedAt          DateTime  @updatedAt @map("updated_at")
-  deletedAt          DateTime? @map("deleted_at")
+// A goal is a RULE. It never stores completion state.
+// Completions, partial progress, and scheduling live in Assignment rows.
+model Goal {
+  id           String    @id @default(uuid()) @db.Char(36)
+  userId       String    @db.Char(36)
+  parentGoalId String?   @db.Char(36)
 
-  user        User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  activeDays  GoalActiveDayRecord[]
-  exclusions  GoalExclusionRecord[]
-  milestones  GoalMilestoneRecord[]
-  assignments AssignmentRecord[]
+  title       String  @db.VarChar(500)
+  description String? @db.Text
+  emoji       String? @db.VarChar(8)
 
+  // cadence: "daily"|"weekly"|"monthly"|"yearly"|"seasonal"|"project"|"one-time"
+  cadence String @db.VarChar(20)
+
+  // measure: "binary" = done/not-done | "numeric" = X units per period
+  measure String @db.VarChar(10)
+
+  // status: "ongoing"|"paused"|"done"|"archived"|"killed"
+  status String @default("ongoing") @db.VarChar(20)
+
+  // ── Source / color coding ★ NEW ───────────────────────────────────────────
+  // "preset"          → BLUE chip
+  // "preset_modified" → YELLOW chip
+  // "custom"          → no chip
+  // "one_off"         → light grey chip
+  source   String  @default("custom") @db.VarChar(20)
+  presetId String? @db.Char(36)
+
+  // dayModel: "civil" (midnight) | "jewish" (nightfall)
+  dayModel String? @db.VarChar(10)
+
+  // Numeric config
+  target      Int?
+  targetUnit  String? @db.VarChar(100)
+  totalTarget Int?    // PROJECT goals only: total units to complete
+
+  // Failure semantics
+  // failureMode: "punishing"|"forgiving"|"kill_streak"
+  failureMode String @default("forgiving") @db.VarChar(20)
+  // carryover: "drop"|"rollover"|"backlog"
+  carryover   String @default("drop") @db.VarChar(20)
+
+  noGettingAhead Boolean @default(false)
+
+  // Time window (zmanim keys from @hebcal/core, e.g. "misheyakir", "chatzot")
+  // These are RULE defaults. Resolved timestamps are snapshotted onto each Assignment.
+  startsAt  String? @db.VarChar(100)
+  expiresAt String? @db.VarChar(100)
+
+  preferredMonthDay String? @db.VarChar(10) // "first"|"last"|"1".."31"
+  lockInDays        Boolean @default(false)
+
+  startDate       DateTime? @db.Date
+  endDate         DateTime? @db.Date
+  dueDate         DateTime? @db.Date
+  endAfterPeriods Int?
+
+  // programKey: links goal to external schedule for per-date labels
+  // "daf-yomi" = show "Menachot 108" etc. via @hebcal/learning
+  programKey String? @db.VarChar(50)
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  completedAt DateTime?
+  pausedAt    DateTime?
+  archivedAt  DateTime?
+  deletedAt   DateTime?
+
+  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent        Goal?               @relation("GoalParent", fields: [parentGoalId], references: [id], onDelete: SetNull)
+  children      Goal[]              @relation("GoalParent")
+  preset        GoalPreset?         @relation(fields: [presetId], references: [id], onDelete: SetNull)
+  activeDays    GoalActiveDay[]
+  exclusions    GoalExclusion[]
+  milestones    GoalMilestone[]
+  periods       GoalPeriod[]
+  statusHistory GoalStatusHistory[]
+  assignments   Assignment[]
+  asProject     ProjectFeeder[]     @relation("ProjectGoal")
+  asFeeder      ProjectFeeder[]     @relation("FeederGoal")
+
+  @@index([userId, cadence, deletedAt])
+  @@index([userId, status])
+  @@index([presetId])
   @@map("goals")
 }
 
-model GoalActiveDayRecord {
-  goalId    String     @map("goal_id")
-  dayOfWeek Int        @map("day_of_week")
-  goal      GoalRecord @relation(fields: [goalId], references: [id], onDelete: Cascade)
+// ─── Goal Active Days ──────────────────────────────────────────────────────────
+model GoalActiveDay {
+  goalId    String @db.Char(36)
+  dayOfWeek Int    // 0=Sun..6=Sat
+
+  goal Goal @relation(fields: [goalId], references: [id], onDelete: Cascade)
 
   @@id([goalId, dayOfWeek])
   @@map("goal_active_days")
 }
 
-model GoalExclusionRecord {
-  goalId     String     @map("goal_id")
-  holidayKey String     @map("holiday_key") @db.VarChar(100)
-  goal       GoalRecord @relation(fields: [goalId], references: [id], onDelete: Cascade)
+// ─── Goal Exclusions ──────────────────────────────────────────────────────────
+// Jewish holidays on which the goal does not apply.
+// App expands category picks ("Yom Tov") into individual keys before writing.
+model GoalExclusion {
+  goalId     String @db.Char(36)
+  holidayKey String @db.VarChar(100)
+
+  goal Goal @relation(fields: [goalId], references: [id], onDelete: Cascade)
 
   @@id([goalId, holidayKey])
   @@map("goal_exclusions")
 }
 
-model GoalMilestoneRecord {
-  id           String     @id @default(uuid())
-  goalId       String     @map("goal_id")
-  label        String     @db.VarChar(500)
-  markerAmount Int?       @map("marker_amount")
-  sortOrder    Int        @default(0) @map("sort_order")
-  completedAt  DateTime?  @map("completed_at")
-  createdAt    DateTime   @default(now()) @map("created_at")
-  updatedAt    DateTime   @updatedAt @map("updated_at")
-  deletedAt    DateTime?  @map("deleted_at")
-  goal         GoalRecord @relation(fields: [goalId], references: [id], onDelete: Cascade)
+// ─── Goal Milestones ──────────────────────────────────────────────────────────
+model GoalMilestone {
+  id           String    @id @default(uuid()) @db.Char(36)
+  goalId       String    @db.Char(36)
+  label        String    @db.VarChar(500)
+  markerAmount Int?
+  sortOrder    Int       @default(0)
+  completedAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
 
+  goal Goal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+
+  @@index([goalId])
   @@map("goal_milestones")
 }
 
-model AssignmentRecord {
-  id               String     @id @default(uuid())
-  goalId           String     @map("goal_id")
-  userId           String     @map("user_id")
-  date             DateTime   @db.Date
-  periodKey        String?    @map("period_key") @db.VarChar(20)
-  targetAmount     Int?       @map("target_amount")
-  scheduledTime    String?    @map("scheduled_time") @db.VarChar(5)
-  durationMins     Int?       @map("duration_mins")
-  completed        Boolean    @default(false)
-  completedAt      DateTime?  @map("completed_at")
-  actualAmount     Int?       @map("actual_amount")
-  replacedAutoDate DateTime?  @map("replaced_auto_date") @db.Date
-  skipped          Boolean    @default(false)
-  createdAt        DateTime   @default(now()) @map("created_at")
-  updatedAt        DateTime   @updatedAt @map("updated_at")
-  deletedAt        DateTime?  @map("deleted_at")
+// ─── Goal Periods ─────────────────────────────────────────────────────────────
+// One row per goal per period. Materializes aggregates so calendar renders
+// never re-scan the full assignments table from scratch.
+//
+// period_key format:
+//   daily   → "2026-04-29"
+//   weekly  → "2026-04-26"  (Sunday of that week)
+//   monthly → "2026-04"
+//   yearly  → "2026"
+model GoalPeriod {
+  id              String    @id @default(uuid()) @db.Char(36)
+  goalId          String    @db.Char(36)
+  periodKey       String    @db.VarChar(20)
+  targetAmount    Int
+  plannedAmount   Int       @default(0)
+  completedAmount Int       @default(0)
+  backlogIn       Int       @default(0)
+  backlogOut      Int       @default(0)
+  periodEndedAt   DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  goal GoalRecord @relation(fields: [goalId], references: [id], onDelete: Cascade)
-  user User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  goal Goal @relation(fields: [goalId], references: [id], onDelete: Cascade)
 
+  @@unique([goalId, periodKey])
+  @@map("goal_periods")
+}
+
+// ─── Goal Status History ──────────────────────────────────────────────────────
+// Append-only. Never update or delete rows.
+model GoalStatusHistory {
+  id         String   @id @default(uuid()) @db.Char(36)
+  goalId     String   @db.Char(36)
+  fromStatus String?  @db.VarChar(20)
+  toStatus   String   @db.VarChar(20)
+  changedAt  DateTime @default(now())
+  note       String?  @db.Text
+
+  goal Goal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+
+  @@index([goalId])
+  @@map("goal_status_history")
+}
+
+// ─── Assignments ──────────────────────────────────────────────────────────────
+// A single occurrence of a goal on a specific day.
+//
+// HYBRID MATERIALIZATION RULE:
+//   A row only exists when something happened: user completed, partially
+//   progressed, scheduled, rescheduled, or skipped the occurrence.
+//   "Pending" occurrences are computed virtually by getDayInstances().
+//   Use Prisma upsert on all writes — the @@unique([goalId, date]) constraint
+//   ensures there is never more than one row per (goal, day).
+model Assignment {
+  id     String @id @default(uuid()) @db.Char(36)
+  goalId String @db.Char(36)
+  userId String @db.Char(36)
+
+  // date           = Gregorian planner column
+  // occurrenceDate = halachic obligation date (null → same as date)
+  date           DateTime  @db.Date
+  occurrenceDate DateTime? @db.Date
+
+  // ★ Hebrew date, snapshotted at write time from HebcalDayCache.
+  // Powers Hebrew/Gregorian toggle without re-querying cache.
+  hebrewYear  Int?
+  hebrewMonth Int?
+  hebrewDay   Int?
+
+  // ★ Seasonal ordinal (e.g. omerDay=27). Null for non-seasonal goals.
+  seasonalIndex Int?
+
+  periodKey String? @db.VarChar(20)
+
+  // Time window snapshotted at materialization from goal.startsAt/expiresAt
+  // resolved against that day's zmanim. Prevents historical tasks shifting.
+  windowStart DateTime?
+  windowEnd   DateTime?
+
+  targetAmount  Int?
+  scheduledTime String? @db.VarChar(5)
+  durationMins  Int?
+
+  completed    Boolean   @default(false)
+  completedAt  DateTime?
+  actualAmount Int?
+
+  // status: "planned"|"completed"|"in_progress"|"missed"|"expired_forgiven"|"skipped"
+  status String @default("planned") @db.VarChar(20)
+
+  // materializedReason: "user_completed"|"user_partial"|"user_scheduled"
+  //   "user_rescheduled"|"system_expired"|"system_rollover"
+  materializedReason String? @db.VarChar(30)
+
+  originalDate DateTime? @db.Date
+  note         String?   @db.Text
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  goal Goal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([goalId, date])
+  @@index([userId, date])
+  @@index([userId, hebrewYear, hebrewMonth, hebrewDay])
+  @@index([goalId, status])
+  @@index([deletedAt])
   @@map("assignments")
 }
 
+// ─── Goal Suppression ★ NEW ───────────────────────────────────────────────────
+// Replaces v1's `skipped` + `replacedAutoDate` fields on Assignment.
+// One row per (goal, date) where virtual auto-show should NOT render.
+model GoalSuppression {
+  id     String   @id @default(uuid()) @db.Char(36)
+  goalId String   @db.Char(36)
+  userId String   @db.Char(36)
+  date   DateTime @db.Date
+
+  // "moved"|"skipped"|"deleted_assignment"|"user_paused_day"
+  reason String @db.VarChar(30)
+
+  // If suppression was created because assignment moved elsewhere,
+  // points to destination assignment for cleanup on re-move/delete.
+  relatedAssignmentId String? @db.Char(36)
+
+  createdAt DateTime  @default(now())
+  deletedAt DateTime?
+
+  @@unique([goalId, date, deletedAt])
+  @@index([userId, date])
+  @@map("goal_suppression")
+}
+
+// ─── Project Feeders ★ NEW ────────────────────────────────────────────────────
+model ProjectFeeder {
+  id            String  @id @default(uuid()) @db.Char(36)
+  projectGoalId String  @db.Char(36)
+  feederGoalId  String  @db.Char(36)
+  weight        Decimal @default(1.0000) @db.Decimal(10, 4)
+  autoRollup    Boolean @default(true)
+
+  createdAt DateTime  @default(now())
+  deletedAt DateTime?
+
+  projectGoal Goal @relation("ProjectGoal", fields: [projectGoalId], references: [id], onDelete: Cascade)
+  feederGoal  Goal @relation("FeederGoal",  fields: [feederGoalId],  references: [id], onDelete: Cascade)
+
+  @@unique([projectGoalId, feederGoalId])
+  @@index([feederGoalId])
+  @@map("project_feeders")
+}
+
+// ─── Project Progress ★ NEW ───────────────────────────────────────────────────
+// Append-only ledger. Total project progress = SUM(amount).
+model ProjectProgress {
+  id                 String   @id @default(uuid()) @db.Char(36)
+  userId             String   @db.Char(36)
+  projectGoalId      String   @db.Char(36)
+  amount             Decimal  @db.Decimal(12, 2)
+  occurredOn         DateTime @db.Date
+  // "feeder_auto"|"manual_entry"|"backfill"|"correction"
+  source             String   @db.VarChar(20)
+  sourceAssignmentId String?  @db.Char(36)
+  note               String?  @db.Text
+
+  createdAt DateTime  @default(now())
+  deletedAt DateTime?
+
+  @@index([projectGoalId, occurredOn])
+  @@index([userId, projectGoalId])
+  @@map("project_progress")
+}
+
+// ─── User Goal Order ──────────────────────────────────────────────────────────
+model UserGoalOrder {
+  userId    String @db.Char(36)
+  goalId    String @db.Char(36)
+  sortOrder Int    @default(0)
+
+  @@id([userId, goalId])
+  @@index([userId, sortOrder])
+  @@map("user_goal_order")
+}
+
 // ─── Admin Event Log ──────────────────────────────────────────────────────────
-// Append-only log of notable events. Written by auth actions automatically.
-// Displayed in Admin → Logs tab.
 model AdminEvent {
-  id        String   @id @default(uuid())
-  type      String   // "signup" | "signin" | "password-reset" | "error" | "admin-action"
+  id        String   @id @default(uuid()) @db.Char(36)
+  type      String   @db.VarChar(50)
   userEmail String?  @db.VarChar(320)
   details   String?  @db.Text
   createdAt DateTime @default(now())
+  userId    String?  @db.Char(36)
 
-  // Optional FK — kept nullable so events survive user deletion
-  userId String?
-  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([createdAt])
   @@index([type])

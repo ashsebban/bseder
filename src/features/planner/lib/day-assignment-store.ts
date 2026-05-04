@@ -1,11 +1,23 @@
 import { z } from "zod";
-import { clearScopedJson, loadScopedJsonArray, saveScopedJson } from "../../../lib/scoped-storage-store";
+import {
+  clearScopedJson,
+  dispatchScopedStorageEvent,
+  loadScopedJsonArray,
+  saveScopedJson,
+} from "../../../lib/scoped-storage-store";
 
 export const DAY_ASSIGNMENTS_STORAGE_UPDATED_EVENT = "day-assignments-storage-updated";
 
 export interface DayAssignment {
   id: string;
   date: string;     // ISO date "2026-03-19"
+  /**
+   * The obligation date this assignment counts for.
+   * Defaults to `date` for civil-day goals. Jewish-day goals can appear on
+   * one Gregorian planner date while counting for the Jewish day whose daytime
+   * is represented by a different ISO date.
+   */
+  occurrenceDate?: string;
   goalId: string;
   completed: boolean;
   targetAmount?: number; // for quantified goals: how many units to do this session
@@ -30,10 +42,14 @@ export interface DayAssignment {
   durationMins?: number;
   /** "HH:MM" — completion marker; mirrors scheduledTime when the item lives on the calendar */
   completedAt?: string;
+  /** True when the user explicitly completed this after its time window had passed */
+  completedAfterWindow?: boolean;
   /** Shared by split quantified session fragments that originated from one planned session */
   sessionGroupId?: string;
   /** True when this occurrence was materialized from a recurring goal rule for the current planner period */
   generated?: boolean;
+  /** True when a generated display row is visible but not actionable yet/anymore. */
+  disabled?: boolean;
   /**
    * When true, this is a "skip record" — no rendered goal item.
    * Created when deleting an assignment that had replacedAutoDate, to keep
@@ -48,15 +64,15 @@ export interface DayAssignmentsStorageUpdatedDetail {
 }
 
 function dispatchDayAssignmentsStorageUpdated(storageScope: string, assignments: DayAssignment[]) {
-  if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent<DayAssignmentsStorageUpdatedDetail>(DAY_ASSIGNMENTS_STORAGE_UPDATED_EVENT, {
-    detail: { storageScope, assignments },
-  }));
+  dispatchScopedStorageEvent<DayAssignmentsStorageUpdatedDetail>(
+    DAY_ASSIGNMENTS_STORAGE_UPDATED_EVENT,
+    { storageScope, assignments },
+  );
 }
 
 type PersistableAssignmentLike = Pick<
   Partial<DayAssignment>,
-  "generated" | "replacedAutoDate" | "scheduledTime" | "durationMins" | "sessionGroupId" | "skipped"
+  "id" | "generated" | "replacedAutoDate" | "scheduledTime" | "durationMins" | "sessionGroupId" | "skipped"
 >;
 
 export function isEphemeralGeneratedAssignment(assignment: PersistableAssignmentLike): boolean {
@@ -74,6 +90,10 @@ export function getPersistableDayAssignments(assignments: DayAssignment[]): DayA
   return assignments.filter((assignment) => !isEphemeralGeneratedAssignment(assignment));
 }
 
+export function areDayAssignmentsEqual(a: DayAssignment[], b: DayAssignment[]): boolean {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
+}
+
 // ─── Storage key versioning ──────────────────────────────────────────────────
 const KEY_V1 = "steinberg_day_assignments.v1";
 
@@ -81,6 +101,7 @@ const KEY_V1 = "steinberg_day_assignments.v1";
 const DayAssignmentSchema = z.object({
   id: z.string(),
   date: z.string(),
+  occurrenceDate: z.string().optional(),
   goalId: z.string(),
   completed: z.boolean(),
   targetAmount: z.number().optional(),
@@ -89,8 +110,10 @@ const DayAssignmentSchema = z.object({
   scheduledTime: z.string().optional(),
   durationMins: z.number().optional(),
   completedAt: z.string().optional(),
+  completedAfterWindow: z.boolean().optional(),
   sessionGroupId: z.string().optional(),
   generated: z.boolean().optional(),
+  disabled: z.boolean().optional(),
   skipped: z.boolean().optional(),
 });
 
@@ -115,7 +138,7 @@ export function loadDayAssignments(storageScope: string): DayAssignment[] {
 export function saveDayAssignments(storageScope: string, assignments: DayAssignment[]): void {
   const persistableAssignments = getPersistableDayAssignments(assignments);
   if (saveScopedJson({ baseKey: KEY_V1, storageScope, value: persistableAssignments })) {
-    dispatchDayAssignmentsStorageUpdated(storageScope, persistableAssignments);
+    dispatchDayAssignmentsStorageUpdated(storageScope, assignments);
   }
 }
 
@@ -135,11 +158,13 @@ export function createAssignment(
   durationMins?: number,
   sessionGroupId?: string,
   generated?: boolean,
+  occurrenceDate?: string,
 ): DayAssignment {
   return {
     id: generateId(),
     goalId,
     date,
+    occurrenceDate,
     completed: false,
     targetAmount,
     periodKey,

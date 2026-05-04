@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { db } from "@/lib/db";
+import { db, withPrismaReconnectRetry } from "@/lib/db";
 import { PageShell } from "@/components/ui/page-shell";
 import { AppNav } from "@/components/layout/app-nav";
 import { PageContainer } from "@/components/ui/page-shell";
@@ -7,14 +7,31 @@ import { SettingsClient } from "@/features/settings/components/settings-client";
 import { calendarPreferencesFromUserPreferences } from "@/features/settings/lib/calendar-preference-utils";
 import { getCurrentActiveUser } from "@/lib/current-active-user";
 
-export default async function SettingsPage() {
+interface SettingsPageProps {
+  searchParams?: Promise<{ tab?: string | string[] }>;
+}
+
+export default async function SettingsPage({ searchParams }: SettingsPageProps) {
   const currentUser = await getCurrentActiveUser();
   if (!currentUser) redirect("/auth/sign-in");
+  const params = searchParams ? await searchParams : {};
+  const tab = Array.isArray(params.tab) ? params.tab[0] : params.tab;
+  const TAB_MAP: Record<string, string> = {
+    account: "Account",
+    "my-judaism": "My Judaism",
+    calendar: "Calendar",
+    goals: "Goals",
+    security: "Security",
+    other: "Other",
+  };
+  const initialTab = tab ? TAB_MAP[tab] : undefined;
 
-  const user = await db.user.findFirst({
-    where: { id: currentUser.user.id, deletedAt: null },
-    include: { preferences: true, accounts: { select: { provider: true } } },
-  });
+  const user = await withPrismaReconnectRetry(() =>
+    db.user.findFirst({
+      where: { id: currentUser.user.id, deletedAt: null },
+      include: { preferences: true, accounts: { select: { provider: true } } },
+    }),
+  );
 
   if (!user) redirect("/auth/sign-in");
 
@@ -41,6 +58,7 @@ export default async function SettingsPage() {
           hasGoogleAccount={hasGoogleAccount}
           hasPassword={hasPassword}
           storageScope={user.id}
+          initialTab={initialTab}
         />
       </PageContainer>
     </PageShell>

@@ -2,46 +2,42 @@
 
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useDroppable, useDraggable } from "@dnd-kit/core";
-import { X, Settings } from "lucide-react";
+import { Settings, X } from "lucide-react";
 import { cn } from "@/lib/cn";
-import { Checkbox } from "@/components/ui/checkbox";
 import { toIsoDate, todayIso, addDays } from "@/lib/date";
 import type { CalendarDayMetadata } from "@/features/calendar/types/calendar";
 import type { Goal } from "@/features/goals/types/goal";
-import { isPrebuiltGoal } from "@/features/goals/lib/prebuilt-goals";
 import type { DayAssignment } from "@/features/planner/lib/day-assignment-store";
 import {
   buildGoalOccurrencesForDate,
   sortGoalOccurrences,
   type GoalOccurrence,
 } from "@/features/calendar/lib/goal-occurrences";
-import { EditableGoalTitle, GoalListRow } from "@/features/calendar/components/goal-list-row";
+import { GoalListRow, EditableGoalTitle } from "@/features/calendar/components/goal-list-row";
+import { Checkbox } from "@/components/ui/checkbox";
+import { isPrebuiltGoal } from "@/features/goals/lib/prebuilt-goals";
 import type { DayZmanim } from "@/features/calendar/lib/zmanim";
 import { getHourZmanInfo, formatZmanTime } from "@/features/calendar/lib/zmanim";
-import { computeGoalCountdown, getGoalTimeStateForNow } from "@/features/calendar/lib/goal-time-window";
-import { formatClockTime, formatHourLabel, formatMinutesAsTime, parseHHMM } from "@/features/calendar/lib/time-format";
+import { getGoalTimeStateForNow } from "@/features/calendar/lib/goal-time-window";
+import { formatHourLabel, formatMinutesAsTime, formatClockTime, parseHHMM } from "@/features/calendar/lib/time-format";
 import type { CalendarTimeFormat } from "@/features/settings/types/calendar-preferences";
-import { CalendarMetaPills, buildCalendarMetaPills } from "@/components/planner/calendar-meta-pills";
-import { DailyBacklogBadge } from "@/components/planner/daily-backlog-badge";
-import { CompletionBanner, CompletionCount } from "@/components/planner/completion-status";
-import { InlineAddTask, TaskListEmptyState } from "@/components/planner/inline-add-task";
-import { ReorderGrip } from "@/components/planner/reorder-grip";
+import { CalendarMetaPills, buildCalendarMetaPills } from "@/features/planner/components/calendar-meta-pills";
+import { CompletionBanner, CompletionCount } from "@/features/planner/components/completion-status";
+import { InlineAddTask, TaskListEmptyState } from "@/features/planner/components/inline-add-task";
 import { getDailyBacklogEntries, type DailyBacklogEntry } from "@/features/goals/lib/daily-backlog";
-import { getGoalProgramLabel } from "@/features/goals/lib/goal-programs";
+import { OccurrenceItem } from "@/features/planner/components/occurrence-item";
 
 interface DayFocusProps {
   date: Date;
   relativeLabel: string;
   goals: Goal[];
   dayAssignments: DayAssignment[];
-  excludedByGoal: Map<string, Set<string>>;
   metadata?: CalendarDayMetadata;
   onToggleDate: (goalId: string, isoDate: string, source?: "checklist") => void;
   onToggleAssignment: (id: string) => void;
   onRemoveAssignment: (assignmentId: string) => void;
   onUnscheduleAssignment: (assignmentId: string) => void;
   onAddTask: (title: string, isoDate: string) => void;
-  onSetScheduledTime: (assignmentId: string, time: string | null) => void;
   onNavigateToDate: (date: Date) => void;
   onRenameGoal: (goalId: string, nextTitle: string) => void;
   zmanim?: DayZmanim;
@@ -602,280 +598,58 @@ function DayTimeline({
   );
 }
 
-// ─── Checklist items ──────────────────────────────────────────────────────────
-function TimingPill({ value }: { value: string }) {
+
+function ChecklistSectionHeader({
+  label,
+  count,
+  tone = "muted",
+  expanded = true,
+  onToggle,
+}: {
+  label: string;
+  count: number;
+  tone?: "muted" | "missed" | "completed";
+  expanded?: boolean;
+  onToggle?: () => void;
+}) {
+  const colorClass =
+    tone === "missed"
+      ? "text-red-400 hover:bg-red-50 hover:text-red-500"
+      : tone === "completed"
+        ? "text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700"
+        : "text-slate-400";
+  const countClass =
+    tone === "missed"
+      ? "bg-red-50 text-red-500"
+      : tone === "completed"
+        ? "bg-emerald-50 text-emerald-600"
+        : "bg-slate-100 text-slate-500";
+
+  const content = (
+    <>
+      <span>{onToggle ? `${expanded ? "Hide" : "Show"} ${label.toLowerCase()}` : label}</span>
+      <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-bold tabular-nums", countClass)}>
+        {count}
+      </span>
+    </>
+  );
+
+  if (!onToggle) {
+    return (
+      <div className={cn("flex w-full items-center justify-between px-2 py-1.5 text-[11px] font-semibold", colorClass)}>
+        {content}
+      </div>
+    );
+  }
+
   return (
-    <span
-      className="shrink-0 rounded-full border border-brand/15 bg-brand/[0.08] px-2 py-[2px] text-[9.5px] font-semibold text-brand/75"
+    <button
+      type="button"
+      onClick={onToggle}
+      className={cn("flex w-full items-center justify-between rounded-xl px-2 py-1.5 text-[11px] font-semibold transition", colorClass)}
     >
-      {value}
-    </span>
-  );
-}
-
-function DailyCheckItem({
-  goal,
-  isoDate,
-  isToday,
-  now,
-  allIds,
-  onToggle,
-  onReorderGoals,
-  zmanim,
-  onRenameGoal,
-  backlogEntries,
-}: {
-  goal: Goal;
-  isoDate: string;
-  isToday: boolean;
-  now: Date;
-  allIds: string[];
-  onToggle: (goalId: string, isoDate: string, source?: "checklist") => void;
-  onReorderGoals: (prev: string[], next: string[]) => void;
-  zmanim?: DayZmanim;
-  onRenameGoal: (goalId: string, nextTitle: string) => void;
-  backlogEntries: DailyBacklogEntry[];
-}) {
-  const isDone = goal.completedDates?.includes(isoDate) ?? false;
-  const timeState = getGoalTimeStateForNow(goal, zmanim, isToday, now);
-  const countdown = isToday ? computeGoalCountdown(goal, zmanim, now, isDone) : null;
-  const programLabel = getGoalProgramLabel(goal, new Date(`${isoDate}T00:00:00`));
-  const activeDays = goal.activeDays;
-  const baseSubtitle =
-    activeDays && activeDays.length > 0 && activeDays.length < 7
-      ? `Daily · ${activeDays[0]}–${activeDays[activeDays.length - 1]}`
-      : "Daily";
-  const subtitle =
-    countdown
-      ? `${baseSubtitle} · ${countdown.label}`
-      : timeState === "expired" ? `${baseSubtitle} · expired`
-      : timeState === "not-yet" ? `${baseSubtitle} · not yet`
-      : baseSubtitle;
-
-  const [isSortDragging, setIsSortDragging] = useState(false);
-  const { attributes, listeners, setNodeRef, isDragging, transform } = useDraggable({
-    id: `daily:${goal.id}`,
-  });
-  const style = transform ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`, zIndex: 999 } : undefined;
-
-  return (
-    <GoalListRow
-      density="comfortable"
-      rowRef={setNodeRef}
-      rootProps={{ ...listeners, ...attributes }}
-      style={style}
-      className={cn(
-        "cursor-grab select-none touch-none active:cursor-grabbing",
-        (isDragging || isSortDragging)
-          ? "bg-brand/[0.05] shadow-sm ring-1 ring-brand/15"
-          : "hover:bg-slate-50",
-        (isDragging || isSortDragging) && "opacity-40",
-        !isDragging && !isSortDragging && timeState !== "active" && "opacity-50",
-      )}
-      leading={(
-        <ReorderGrip
-          itemId={goal.id}
-          itemIds={allIds}
-          onReorder={onReorderGoals}
-          rowStepPx={40}
-          onDragStart={() => setIsSortDragging(true)}
-          onDragEnd={() => setIsSortDragging(false)}
-          className={cn("mt-[3px] group-hover:text-slate-400", (isDragging || isSortDragging) && "text-brand")}
-        />
-      )}
-      checkbox={(
-        <Checkbox
-          checked={isDone}
-          onChange={() => onToggle(goal.id, isoDate, "checklist")}
-          size="md"
-          uncheckedClassName="hover:border-slate-300"
-        />
-      )}
-      content={(
-        <div className="min-w-0">
-          <div className="flex min-w-0 items-center gap-2">
-            <EditableGoalTitle
-              title={goal.title}
-              onRename={isPrebuiltGoal(goal.id) ? undefined : (nextTitle) => onRenameGoal(goal.id, nextTitle)}
-              className={cn(
-                "text-[13.5px] font-semibold leading-tight text-slate-800 transition-colors",
-                isDone && "text-slate-400 line-through decoration-slate-300",
-              )}
-              inputClassName="text-[13.5px] font-semibold"
-            />
-            <DailyBacklogBadge
-              goalTitle={goal.title}
-              entries={backlogEntries}
-              onResolveDate={(date) => onToggle(goal.id, date)}
-              compact
-            />
-          </div>
-          {(() => {
-            const stateLabel = countdown ? countdown.label : timeState === "expired" ? "expired" : timeState === "not-yet" ? "not yet" : null;
-            const parts = [programLabel, stateLabel].filter(Boolean);
-            if (!parts.length) return null;
-            return (
-              <p className={cn(
-                "mt-0.5 truncate text-[11px]",
-                countdown?.urgent ? "font-semibold text-amber-500" : "text-slate-400",
-              )}>{parts.join(" · ")}</p>
-            );
-          })()}
-        </div>
-      )}
-    />
-  );
-}
-
-function AssignedCheckItem({
-  goal,
-  assignment,
-  actionId,
-  collapsed,
-  displayAmount,
-  isToday,
-  now,
-  timeFormat,
-  allIds,
-  onToggle,
-  onRemove,
-  onResolveBacklogDate,
-  onReorderGoals,
-  zmanim,
-  onRenameGoal,
-  backlogEntries,
-}: {
-  goal: Goal;
-  assignment: DayAssignment;
-  actionId: string;
-  collapsed: boolean;
-  displayAmount: number;
-  isToday: boolean;
-  now: Date;
-  timeFormat: "12h" | "24h";
-  allIds: string[];
-  onToggle: (id: string) => void;
-  onRemove: (id: string) => void;
-  onResolveBacklogDate: (goalId: string, isoDate: string) => void;
-  onReorderGoals: (prev: string[], next: string[]) => void;
-  zmanim?: DayZmanim;
-  onRenameGoal: (goalId: string, nextTitle: string) => void;
-  backlogEntries: DailyBacklogEntry[];
-}) {
-  const [isSortDragging, setIsSortDragging] = useState(false);
-  const { attributes, listeners, setNodeRef, isDragging, transform } = useDraggable({
-    id: collapsed ? `checklist-collapsed:${assignment.id}` : `assignment:${assignment.id}`,
-    disabled: collapsed,
-  });
-  const style = transform ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`, zIndex: 999 } : undefined;
-
-  const isDone = assignment.completed;
-  const timeState = getGoalTimeStateForNow(goal, zmanim, isToday, now);
-  const countdown = isToday ? computeGoalCountdown(goal, zmanim, now, isDone) : null;
-  const programLabel = getGoalProgramLabel(goal, new Date(`${assignment.date}T00:00:00`));
-
-  const cadenceLabel =
-    goal.cadence === "one-time" && goal.adhoc
-      ? "Task"
-      : goal.cadence.charAt(0).toUpperCase() + goal.cadence.slice(1);
-
-  const activeDaysLabel =
-    goal.cadence === "daily" && goal.activeDays && goal.activeDays.length > 0 && goal.activeDays.length < 7
-      ? `${goal.activeDays[0]}–${goal.activeDays[goal.activeDays.length - 1]}`
-      : null;
-
-  const subtitleParts = [
-    cadenceLabel,
-    activeDaysLabel,
-    goal.type === "quantified" && displayAmount ? `${displayAmount} ${goal.targetUnit ?? "units"}` : null,
-    countdown
-      ? countdown.label
-      : timeState === "expired" ? "expired" : timeState === "not-yet" ? "not yet" : null,
-  ].filter(Boolean);
-  const subtitle = subtitleParts.join(" · ");
-  const timeLabel = formatClockTime(assignment.scheduledTime ?? assignment.completedAt, timeFormat);
-
-  return (
-    <GoalListRow
-      density="comfortable"
-      rowRef={setNodeRef}
-      rootProps={!collapsed ? { ...listeners, ...attributes } : undefined}
-      style={style}
-      className={cn(
-        "select-none touch-none active:cursor-grabbing",
-        (isDragging || isSortDragging)
-          ? "bg-brand/[0.05] shadow-sm ring-1 ring-brand/15"
-          : "hover:bg-slate-50",
-        (isDragging || isSortDragging) ? "opacity-40" : null,
-        !collapsed && "cursor-grab",
-        !isDragging && !isSortDragging && timeState !== "active" && !assignment.completed && "opacity-50",
-      )}
-      leading={(
-        <ReorderGrip
-          itemId={goal.id}
-          itemIds={allIds}
-          onReorder={onReorderGoals}
-          rowStepPx={40}
-          onDragStart={() => setIsSortDragging(true)}
-          onDragEnd={() => setIsSortDragging(false)}
-          className={cn("mt-[3px] group-hover:text-slate-400", (isDragging || isSortDragging) && "text-brand")}
-        />
-      )}
-      checkbox={(
-        <Checkbox
-          checked={assignment.completed}
-          onChange={() => onToggle(actionId)}
-          size="md"
-          uncheckedClassName="hover:border-slate-300"
-        />
-      )}
-      content={(
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <EditableGoalTitle
-              title={goal.title}
-              onRename={isPrebuiltGoal(goal.id) ? undefined : (nextTitle) => onRenameGoal(goal.id, nextTitle)}
-              className={cn(
-                "text-[13.5px] font-semibold leading-tight text-slate-800 transition-colors",
-                assignment.completed && "text-slate-400 line-through decoration-slate-300",
-              )}
-              inputClassName="text-[13.5px] font-semibold"
-            />
-            <DailyBacklogBadge
-              goalTitle={goal.title}
-              entries={backlogEntries}
-              onResolveDate={(date) => onResolveBacklogDate(goal.id, date)}
-              compact
-            />
-          </div>
-          {(() => {
-            const parts = [programLabel, subtitle].filter(Boolean);
-            if (!parts.length) return null;
-            return (
-              <p className={cn(
-                "mt-0.5 truncate text-[11px]",
-                countdown?.urgent ? "font-semibold text-amber-500" : "text-slate-400",
-              )}>{parts.join(" · ")}</p>
-            );
-          })()}
-        </div>
-      )}
-      trailing={(
-        <div className="flex shrink-0 items-center gap-1">
-          {!collapsed && timeLabel && <TimingPill value={timeLabel} />}
-          {!goal.lockInDays && (
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onRemove(actionId); }}
-              onPointerDown={(e) => e.stopPropagation()}
-              className="rounded-full p-0.5 text-slate-300 opacity-0 transition hover:text-red-400 group-hover:opacity-100"
-            >
-              <X className="h-3 w-3" strokeWidth={2.5} />
-            </button>
-          )}
-        </div>
-      )}
-    />
+      {content}
+    </button>
   );
 }
 
@@ -916,6 +690,8 @@ function DayChecklist({
   backlogEntriesByGoal: Map<string, DailyBacklogEntry[]>;
 }) {
   const [now, setNow] = useState(() => new Date());
+  const [showCompleted, setShowCompleted] = useState(true);
+  const [showMissed, setShowMissed] = useState(true);
   const { setNodeRef: setDropRef, isOver: isOverChecklist } = useDroppable({ id: isoDate });
 
   useEffect(() => {
@@ -929,10 +705,43 @@ function DayChecklist({
   const totalCount = occurrences.length;
   const completedCount = occurrences.filter((occurrence) => occurrence.completed).length;
   const allDone = totalCount > 0 && completedCount === totalCount;
+  const isPastDate = isoDate < todayIso();
+  const isMissedOccurrence = (item: GoalOccurrence) => {
+    if (item.completed) return false;
+    if (isPastDate) return true;
+    if (!isToday) return false;
+    return getGoalTimeStateForNow(item.goal, zmanim, true, now) === "expired";
+  };
+  const activeOccurrences = occurrences.filter((item) => !item.completed && !isMissedOccurrence(item));
+  const missedOccurrences = occurrences.filter(isMissedOccurrence);
+  const completedOccurrences = occurrences.filter((item) => item.completed);
 
   const tomorrow = addDays(date, 1);
 
   const timePills = buildCalendarMetaPills(metadata);
+  const renderOccurrence = (item: GoalOccurrence) => (
+    <OccurrenceItem
+      key={item.id}
+      item={item}
+      density="comfortable"
+      isToday={isToday}
+      now={now}
+      zmanim={zmanim}
+      timeFormat={timeFormat}
+      onToggle={
+        item.source === "auto"
+          ? () => onToggleDate(item.goal.id, item.occurrenceDate, "checklist")
+          : () => onToggleAssignment(item.actionId)
+      }
+      onRemove={item.source === "assignment" ? () => onRemoveAssignment(item.actionId) : undefined}
+      onRenameGoal={onRenameGoal}
+      backlogEntries={backlogEntriesByGoal.get(item.goal.id) ?? []}
+      onResolveBacklogDate={(goalId, date) => onToggleDate(goalId, date)}
+      enableDrag
+      allIds={itemIds}
+      onReorderGoals={onReorderGoals ?? (() => {})}
+    />
+  );
 
   return (
     <div className="flex flex-col rounded-2xl border border-slate-200/80 bg-white shadow-sm">
@@ -972,44 +781,45 @@ function DayChecklist({
           isOverChecklist && "bg-brand/[0.025]",
         )}
       >
-        {/* Unified sorted goal list */}
-        {occurrences.map((item) =>
-          item.source === "auto" ? (
-            <DailyCheckItem
-              key={item.id}
-              goal={item.goal}
-              isoDate={isoDate}
-              isToday={isToday}
-              now={now}
-              allIds={itemIds}
-              onToggle={onToggleDate}
-              onReorderGoals={onReorderGoals ?? (() => {})}
-              zmanim={zmanim}
-              onRenameGoal={onRenameGoal}
-              backlogEntries={backlogEntriesByGoal.get(item.goal.id) ?? []}
+        {activeOccurrences.length > 0 ? (
+          <div className="space-y-px">
+            {activeOccurrences.map(renderOccurrence)}
+          </div>
+        ) : null}
+
+        {missedOccurrences.length > 0 ? (
+          <div className={cn("mt-2", activeOccurrences.length > 0 && "border-t border-red-100 pt-2")}>
+            <ChecklistSectionHeader
+              label="Missed"
+              count={missedOccurrences.length}
+              tone="missed"
+              expanded={showMissed}
+              onToggle={() => setShowMissed((value) => !value)}
             />
-          ) : (
-            <AssignedCheckItem
-              key={item.id}
-              goal={item.goal}
-              assignment={item.assignment}
-              actionId={item.actionId}
-              collapsed={item.collapsed}
-              displayAmount={item.displayAmount}
-              isToday={isToday}
-              now={now}
-              timeFormat={timeFormat}
-              allIds={itemIds}
-              onToggle={onToggleAssignment}
-              onRemove={onRemoveAssignment}
-              onResolveBacklogDate={onToggleDate}
-              onReorderGoals={onReorderGoals ?? (() => {})}
-              zmanim={zmanim}
-              onRenameGoal={onRenameGoal}
-              backlogEntries={backlogEntriesByGoal.get(item.goal.id) ?? []}
+            {showMissed ? (
+              <div className="mt-1 space-y-px rounded-2xl border border-red-100 bg-red-50/30 p-1">
+                {missedOccurrences.map(renderOccurrence)}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {completedOccurrences.length > 0 ? (
+          <div className={cn("mt-2", (activeOccurrences.length > 0 || missedOccurrences.length > 0) && "border-t border-emerald-100 pt-2")}>
+            <ChecklistSectionHeader
+              label="Completed"
+              count={completedOccurrences.length}
+              tone="completed"
+              expanded={showCompleted}
+              onToggle={() => setShowCompleted((value) => !value)}
             />
-          ),
-        )}
+            {showCompleted ? (
+              <div className="mt-1 space-y-px rounded-2xl bg-emerald-50/45 p-1">
+                {completedOccurrences.map(renderOccurrence)}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         {/* Empty state */}
         {totalCount === 0 && (
@@ -1057,14 +867,12 @@ export function DayFocus({
   relativeLabel,
   goals,
   dayAssignments,
-  excludedByGoal,
   metadata,
   onToggleDate,
   onToggleAssignment,
   onRemoveAssignment,
   onUnscheduleAssignment,
   onAddTask,
-  onSetScheduledTime,
   onNavigateToDate,
   onRenameGoal,
   zmanim,
@@ -1093,7 +901,6 @@ export function DayFocus({
       date,
       goals,
       dayAssignments,
-      excludedByGoal,
     }),
     goalOrder,
   );

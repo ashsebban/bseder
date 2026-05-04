@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "target": "ES2017",
+    "target": "ES2022",
     "lib": [
       "dom",
       "dom.iterable",
@@ -17,6 +17,7 @@
     "isolatedModules": true,
     "jsx": "preserve",
     "incremental": true,
+    "tsBuildInfoFile": ".next-dev/cache/tsconfig.app.tsbuildinfo",
     "plugins": [
       {
         "name": "next"
@@ -33,7 +34,6 @@
     "**/*.ts",
     "**/*.tsx",
     ".next-prod/types/**/*.ts",
-    ".next/types/**/*.ts",
     "next-env.d.ts",
     ".next-dev/types/**/*.ts"
   ],

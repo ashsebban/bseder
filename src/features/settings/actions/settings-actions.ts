@@ -54,6 +54,9 @@ export async function changePassword(
 export async function updateCalendarPreferences(
   prefs: Partial<{
     locationKey: string;
+    nusach: string;
+    havdalahMode: string;
+    observanceLevel: string;
     timeFormat: string;
     showHebrewDates: boolean;
     weekStartsOn: number;
@@ -65,6 +68,9 @@ export async function updateCalendarPreferences(
     havdalahOpinion: string;
     timelineSnapMins: number;
     timelineDefaultDurationMins: number;
+    showHebrewDatesOnGoals: boolean;
+    hebrewDateFormat: string;
+    hebrewDateIncludeYear: boolean;
   }>,
 ): Promise<{ error?: string }> {
   const session = await auth();

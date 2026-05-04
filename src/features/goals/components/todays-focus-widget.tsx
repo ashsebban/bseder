@@ -2,10 +2,13 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check } from "lucide-react";
-import { GoalListRow } from "@/features/calendar/components/goal-list-row";
 import { buildGoalOccurrencesForDate, sortGoalOccurrences, type GoalOccurrence } from "@/features/calendar/lib/goal-occurrences";
-import { formatClockTime } from "@/features/calendar/lib/time-format";
+import { getGoalTimePlacementForNow, getGoalTimeStateForNow, isGoalOutsideTimeWindow, MAARIV_GOAL_ID, type GoalTimeCaveat } from "@/features/calendar/lib/goal-time-window";
+import { getAssignmentOccurrenceDate } from "@/features/calendar/lib/goal-day";
+import { syncTimeCaveatFollowup } from "@/features/calendar/lib/time-caveat-followups";
+import { resolveLocation } from "@/features/calendar/lib/locations";
+import { computeDayZmanim, type DayZmanim } from "@/features/calendar/lib/zmanim";
+import { OccurrenceItem } from "@/features/planner/components/occurrence-item";
 import {
   applyQuantifiedAssignmentCompletion,
   reopenCollapsedSessionGroupAsSingleAssignment,
@@ -13,8 +16,9 @@ import {
   suggestedAssignmentAmount,
   sumAssignmentAmounts,
 } from "@/features/calendar/lib/assignment-actions";
-import { CompletionCount } from "@/components/planner/completion-status";
-import { PlannerModalCard } from "@/components/planner/planner-modal-card";
+import { CompletionCount } from "@/features/planner/components/completion-status";
+import { PlannerModalCard } from "@/features/planner/components/planner-modal-card";
+import { TimeWindowConfirm } from "@/features/planner/components/time-window-confirm";
 import {
   GOALS_STORAGE_UPDATED_EVENT,
   loadGoals,
@@ -28,6 +32,7 @@ import { toggleGoalDate, updateParentProgress } from "@/features/goals/lib/goal-
 import type { Goal } from "@/features/goals/types/goal";
 import {
   DAY_ASSIGNMENTS_STORAGE_UPDATED_EVENT,
+  areDayAssignmentsEqual,
   loadDayAssignments,
   saveDayAssignments,
   type DayAssignment,
@@ -52,13 +57,25 @@ type PendingFocusAmount =
       assignmentId: string;
       goalId: string;
       defaultAmount: number;
+      completedAfterWindow?: boolean;
     }
   | {
       kind: "date";
       goalId: string;
       isoDate: string;
       defaultAmount: number;
+      completedAfterWindow?: boolean;
     };
+
+type PendingMissedOverride = {
+  item: GoalOccurrence;
+  timeState: "not-yet" | "expired";
+  caveat?: GoalTimeCaveat;
+};
+
+function getOccurrenceTimeWindowGoal(item: GoalOccurrence): Goal {
+  return item.goal;
+}
 
 function currentTimeString(): string {
   const now = new Date();
@@ -111,6 +128,7 @@ function AmountPrompt({
     </PlannerModalCard>
   );
 }
+
 
 function useFocusStorageState(storageScope: string) {
   const [goals, setGoals] = useState<Goal[]>([]);
@@ -200,61 +218,47 @@ function useFocusStorageState(storageScope: string) {
   };
 }
 
-function FocusOccurrenceRow({
-  item,
-  onToggle,
-  timeFormat,
+function FocusProgressBar({
+  completed,
+  missed,
+  total,
 }: {
-  item: GoalOccurrence;
-  onToggle: () => void;
-  timeFormat: "12h" | "24h";
+  completed: number;
+  missed: number;
+  total: number;
 }) {
-  const timeLabel = item.source === "assignment" ? formatClockTime(item.assignment.scheduledTime, timeFormat) : null;
-  const amountLabel = item.goal.type === "quantified" && item.displayAmount > 0
-    ? `${item.displayAmount}${item.goal.targetUnit ? ` ${item.goal.targetUnit}` : ""}`
-    : null;
-  const subtitle = [item.programLabel, amountLabel].filter(Boolean).join(" · ");
+  if (total === 0) return <div className="h-1.5 rounded-full bg-slate-100" />;
+  const completedPct = (completed / total) * 100;
+  const missedPct = (missed / total) * 100;
+  const remainingPct = Math.max(0, 100 - completedPct - missedPct);
 
   return (
-    <GoalListRow
-      density="comfortable"
-      className={cn(
-        "border-b border-slate-100/80 px-1 py-1 last:border-b-0",
-        item.completed ? "bg-slate-50/40" : "hover:bg-slate-50/70",
-      )}
-      checkbox={(
-        <button
-          type="button"
-          onClick={onToggle}
-          className={cn(
-            "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition-all duration-200",
-            item.completed ? "border-success bg-success" : "border-slate-300 bg-white",
-          )}
-        >
-          {item.completed ? <Check className="h-3 w-3 text-white" strokeWidth={3} /> : null}
-        </button>
-      )}
-      content={(
-        <div className="min-w-0">
-          <p
-            className={cn(
-              "truncate text-[13.5px] font-semibold leading-tight text-slate-800",
-              item.completed && "text-slate-400 line-through decoration-slate-300",
-            )}
-          >
-            {item.goal.title}
-          </p>
-          {subtitle ? (
-            <p className="mt-0.5 truncate text-[11px] text-slate-400">{subtitle}</p>
-          ) : null}
-        </div>
-      )}
-      trailing={timeLabel ? (
-        <span className="shrink-0 rounded-full border border-brand/15 bg-brand/[0.08] px-2 py-[2px] text-[9.5px] font-semibold text-brand/75">
-          {timeLabel}
-        </span>
-      ) : undefined}
-    />
+    <div className="flex h-1.5 overflow-hidden rounded-full bg-slate-100">
+      {completedPct > 0 ? <div className="bg-emerald-500" style={{ width: `${completedPct}%` }} /> : null}
+      {missedPct > 0 ? <div className="bg-red-400" style={{ width: `${missedPct}%` }} /> : null}
+      {remainingPct > 0 ? <div className="bg-slate-200" style={{ width: `${remainingPct}%` }} /> : null}
+    </div>
+  );
+}
+
+function FocusSectionHeader({
+  label,
+  count,
+  className,
+}: {
+  label: string;
+  count: number;
+  className?: string;
+}) {
+  return (
+    <div className="mb-1 flex items-center justify-between px-2">
+      <p className={cn("text-[9.5px] font-bold uppercase tracking-[0.16em] text-slate-400", className)}>
+        {label}
+      </p>
+      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9.5px] font-bold tabular-nums text-slate-500">
+        {count}
+      </span>
+    </div>
   );
 }
 
@@ -271,6 +275,15 @@ export function TodaysFocusWidget({ storageScope }: { storageScope: string }) {
   } = useFocusStorageState(storageScope);
   const { preferences } = useCalendarPreferences(undefined, storageScope);
   const [pendingAmount, setPendingAmount] = useState<PendingFocusAmount | null>(null);
+  const [pendingMissedOverride, setPendingMissedOverride] = useState<PendingMissedOverride | null>(null);
+  const [showCompleted, setShowCompleted] = useState(false);
+  const [showMissed, setShowMissed] = useState(false);
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(new Date()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   const excludedByGoal = useMemo(() => {
     const map = new Map<string, Set<string>>();
@@ -292,12 +305,12 @@ export function TodaysFocusWidget({ storageScope }: { storageScope: string }) {
   }, [goals, today]);
 
   const plannerDayAssignments = useMemo(
-    () => materializePlannerWeekAssignments(goals, dayAssignments, today, excludedByGoal),
-    [dayAssignments, excludedByGoal, goals, today],
+    () => materializePlannerWeekAssignments(goals, dayAssignments, today, excludedByGoal, { now }),
+    [dayAssignments, excludedByGoal, goals, now, today],
   );
 
   useEffect(() => {
-    if (plannerDayAssignments === dayAssignments || !storageScope) return;
+    if (areDayAssignmentsEqual(plannerDayAssignments, dayAssignments) || !storageScope) return;
     setDayAssignments(plannerDayAssignments);
     saveDayAssignments(storageScope, plannerDayAssignments);
   }, [dayAssignments, plannerDayAssignments, setDayAssignments, storageScope]);
@@ -308,14 +321,36 @@ export function TodaysFocusWidget({ storageScope }: { storageScope: string }) {
         date: today,
         goals,
         dayAssignments: plannerDayAssignments,
-        excludedByGoal,
       }),
       goalOrder,
     ),
     [excludedByGoal, goalOrder, goals, plannerDayAssignments, today],
   );
 
+  const todayZmanim = useMemo(() => {
+    const location = resolveLocation(preferences);
+    if (!location) return null;
+    return computeDayZmanim(today, location, preferences.timeFormat);
+  }, [preferences, today]);
+
+  function isMissedWindow(item: GoalOccurrence): boolean {
+    if (item.completed) return false;
+    // "Missed" = window already expired. "Not yet" stays in the active list.
+    return getGoalTimeStateForNow(getOccurrenceTimeWindowGoal(item), todayZmanim ?? undefined, true, now) === "expired";
+  }
+
+  function isLaterWindow(item: GoalOccurrence): boolean {
+    if (item.completed) return false;
+    return getGoalTimeStateForNow(getOccurrenceTimeWindowGoal(item), todayZmanim ?? undefined, true, now) === "not-yet";
+  }
+
   const completedCount = occurrences.filter((occurrence) => occurrence.completed).length;
+  const incompleteOccurrences = occurrences.filter((occurrence) => !occurrence.completed);
+  const availableOccurrences = incompleteOccurrences.filter((occurrence) => !isMissedWindow(occurrence));
+  const readyOccurrences = availableOccurrences.filter((occurrence) => !isLaterWindow(occurrence));
+  const laterOccurrences = availableOccurrences.filter((occurrence) => isLaterWindow(occurrence));
+  const missedOccurrences = incompleteOccurrences.filter((occurrence) => isMissedWindow(occurrence));
+  const completedOccurrences = occurrences.filter((occurrence) => occurrence.completed);
 
   function persistGoals(nextGoals: Goal[]) {
     setGoals(nextGoals);
@@ -327,9 +362,28 @@ export function TodaysFocusWidget({ storageScope }: { storageScope: string }) {
     if (storageScope) saveDayAssignments(storageScope, nextAssignments);
   }
 
-  function handleToggleDate(goalId: string) {
+  function applyOccurrenceTimeCaveat(item: GoalOccurrence) {
+    const timeWindowGoal = getOccurrenceTimeWindowGoal(item);
+    const placement = getGoalTimePlacementForNow(timeWindowGoal, todayZmanim ?? undefined, true, now);
+    if (!placement.caveat && item.goal.id !== MAARIV_GOAL_ID) return;
+
+    setGoals((currentGoals) => {
+      const result = syncTimeCaveatFollowup(currentGoals, dayAssignments, todayIso, placement.caveat ?? null);
+      if (result.goals !== currentGoals && storageScope) saveGoals(storageScope, result.goals);
+      return result.goals;
+    });
+    setDayAssignments((currentAssignments) => {
+      const result = syncTimeCaveatFollowup(goals, currentAssignments, todayIso, placement.caveat ?? null);
+      if (result.dayAssignments !== currentAssignments && storageScope) {
+        saveDayAssignments(storageScope, result.dayAssignments);
+      }
+      return result.dayAssignments;
+    });
+  }
+
+  function handleToggleDate(goalId: string, occurrenceDate = todayIso, options?: { completedAfterWindow?: boolean }) {
     const goal = goals.find((entry) => entry.id === goalId);
-    const isDone = goal?.completedDates?.includes(todayIso) ?? false;
+    const isDone = goal?.completedDates?.includes(occurrenceDate) ?? false;
 
     if (!goal) return;
 
@@ -337,8 +391,9 @@ export function TodaysFocusWidget({ storageScope }: { storageScope: string }) {
       setPendingAmount({
         kind: "date",
         goalId,
-        isoDate: todayIso,
+        isoDate: occurrenceDate,
         defaultAmount: suggestedAssignmentAmount(goal),
+        completedAfterWindow: options?.completedAfterWindow,
       });
       return;
     }
@@ -347,7 +402,7 @@ export function TodaysFocusWidget({ storageScope }: { storageScope: string }) {
       const timeStr = currentTimeString();
       const periodKey = goal.cadence === "daily"
         ? undefined
-        : computePeriodKey(goal.cadence, new Date(`${todayIso}T00:00:00`));
+        : computePeriodKey(goal.cadence, new Date(`${occurrenceDate}T00:00:00`));
 
       if (!plannerDayAssignments.some((assignment) => assignment.goalId === goalId && assignment.date === todayIso && !assignment.skipped)) {
         persistDayAssignments([
@@ -361,18 +416,22 @@ export function TodaysFocusWidget({ storageScope }: { storageScope: string }) {
               undefined,
               timeStr,
               preferences.timelineDefaultDurationMins,
+              undefined,
+              undefined,
+              occurrenceDate === todayIso ? undefined : occurrenceDate,
             ),
             completed: true,
             completedAt: timeStr,
+            completedAfterWindow: options?.completedAfterWindow,
           },
         ]);
       }
     }
 
-    persistGoals(toggleGoalDate(goals, goalId, todayIso));
+    persistGoals(toggleGoalDate(goals, goalId, occurrenceDate));
   }
 
-  function handleToggleAssignment(actionId: string) {
+  function handleToggleAssignment(actionId: string, options?: { completedAfterWindow?: boolean }) {
     const assignmentsToToggle = resolveAssignmentsForAction(plannerDayAssignments, actionId);
     if (assignmentsToToggle.length === 0) return;
 
@@ -390,7 +449,7 @@ export function TodaysFocusWidget({ storageScope }: { storageScope: string }) {
     if (!goal) return;
 
     if (goal.cadence === "daily" && goal.type === "binary") {
-      const toggleDates = [...new Set(assignmentsToToggle.map((entry) => entry.date))];
+      const toggleDates = [...new Set(assignmentsToToggle.map((entry) => getAssignmentOccurrenceDate(entry)))];
       const alreadyInDates = toggleDates.some((date) => goal.completedDates?.includes(date) ?? false);
       if (nowCompleted !== alreadyInDates) {
         persistGoals(
@@ -408,7 +467,7 @@ export function TodaysFocusWidget({ storageScope }: { storageScope: string }) {
                 plannerDayAssignments.some(
                   (item) =>
                     item.goalId === assignment.goalId &&
-                    item.date === date &&
+                    getAssignmentOccurrenceDate(item) === date &&
                     item.completed &&
                     !assignmentIdsToToggle.has(item.id),
                 ),
@@ -426,6 +485,7 @@ export function TodaysFocusWidget({ storageScope }: { storageScope: string }) {
         assignmentId: assignment.id,
         goalId: goal.id,
         defaultAmount: assignment.targetAmount ?? suggestedAssignmentAmount(goal),
+        completedAfterWindow: options?.completedAfterWindow,
       });
       return;
     }
@@ -446,10 +506,30 @@ export function TodaysFocusWidget({ storageScope }: { storageScope: string }) {
     const timeStr = currentTimeString();
     persistDayAssignments(dayAssignments.map((entry) => {
       if (!assignmentIdsToToggle.has(entry.id)) return entry;
-      if (!nowCompleted) return { ...entry, completed: false, completedAt: undefined };
+      if (!nowCompleted) return { ...entry, completed: false, completedAt: undefined, completedAfterWindow: undefined };
       const completionTime = entry.scheduledTime ?? timeStr;
-      return { ...entry, completed: true, scheduledTime: completionTime, completedAt: completionTime };
+      return {
+        ...entry,
+        completed: true,
+        scheduledTime: completionTime,
+        completedAt: completionTime,
+        completedAfterWindow: options?.completedAfterWindow,
+      };
     }));
+  }
+
+  function toggleOccurrence(item: GoalOccurrence, options?: { completedAfterWindow?: boolean }) {
+    const timeWindowGoal = getOccurrenceTimeWindowGoal(item);
+    if (!options?.completedAfterWindow && !item.completed &&
+        isGoalOutsideTimeWindow(timeWindowGoal, todayZmanim ?? undefined, true, now)) {
+      const timeState = getGoalTimeStateForNow(timeWindowGoal, todayZmanim ?? undefined, true, now) as "not-yet" | "expired";
+      const placement = getGoalTimePlacementForNow(timeWindowGoal, todayZmanim ?? undefined, true, now);
+      setPendingMissedOverride({ item, timeState, caveat: placement.caveat });
+      return;
+    }
+    if (item.source === "assignment") handleToggleAssignment(item.actionId, options);
+    else handleToggleDate(item.goal.id, item.occurrenceDate, options);
+    if (!item.completed) applyOccurrenceTimeCaveat(item);
   }
 
   function confirmPendingAmount(amount: number) {
@@ -472,6 +552,7 @@ export function TodaysFocusWidget({ storageScope }: { storageScope: string }) {
             ...entry,
             scheduledTime: completionTime,
             durationMins: entry.durationMins ?? preferences.timelineDefaultDurationMins,
+            completedAfterWindow: pendingAmount.completedAfterWindow,
           };
         });
         persistDayAssignments(updatedAssignments);
@@ -497,6 +578,7 @@ export function TodaysFocusWidget({ storageScope }: { storageScope: string }) {
             scheduledTime: currentTimeString(),
             durationMins: preferences.timelineDefaultDurationMins,
             completedAt: currentTimeString(),
+            completedAfterWindow: pendingAmount.completedAfterWindow,
           },
         ]);
       }
@@ -510,17 +592,20 @@ export function TodaysFocusWidget({ storageScope }: { storageScope: string }) {
   return (
     <div className="rounded-2xl border border-slate-200/80 bg-white shadow-sm">
       <div className="border-b border-slate-100 px-5 py-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-[13px] font-semibold text-slate-700">Today&apos;s Focus</p>
-            <CompletionCount completedCount={completedCount} totalCount={occurrences.length} className="mt-1 block" />
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[13px] font-semibold text-slate-700">Today&apos;s Focus</p>
+              <CompletionCount completedCount={completedCount} totalCount={occurrences.length} className="mt-1 block" />
+            </div>
+            <Link
+              href={`/planner?view=day&date=${todayIso}`}
+              className="inline-flex h-10 items-center justify-center rounded-2xl border border-line bg-surface px-4 text-sm font-semibold text-text transition duration-200 hover:border-brand/30 hover:bg-brand-soft/60"
+            >
+              Open Today
+            </Link>
           </div>
-          <Link
-            href={`/planner?view=day&date=${todayIso}`}
-            className="inline-flex h-10 items-center justify-center rounded-2xl border border-line bg-surface px-4 text-sm font-semibold text-text transition duration-200 hover:border-brand/30 hover:bg-brand-soft/60"
-          >
-            Open Today
-          </Link>
+          <FocusProgressBar completed={completedCount} missed={missedOccurrences.length} total={occurrences.length} />
         </div>
       </div>
 
@@ -534,17 +619,115 @@ export function TodaysFocusWidget({ storageScope }: { storageScope: string }) {
         </div>
       ) : (
         <div className="h-48 overflow-y-auto px-3 py-3">
-          {occurrences.map((item) => (
-            <FocusOccurrenceRow
-              key={item.id}
-              item={item}
-              timeFormat={preferences.timeFormat}
-              onToggle={() => {
-                if (item.source === "assignment") handleToggleAssignment(item.actionId);
-                else handleToggleDate(item.goal.id);
-              }}
-            />
-          ))}
+          {incompleteOccurrences.length === 0 ? (
+            <p className="px-2 py-3 text-center text-[11px] font-medium text-slate-300">
+              All done for today.
+            </p>
+          ) : null}
+          {readyOccurrences.length === 0 && laterOccurrences.length > 0 ? (
+            <p className="px-2 py-3 text-center text-[11px] font-medium text-slate-300">
+              Nothing open right now. Later items are below.
+            </p>
+          ) : null}
+          {availableOccurrences.length === 0 && incompleteOccurrences.length > 0 ? (
+            <p className="px-2 py-3 text-center text-[11px] font-medium text-slate-300">
+              Nothing still available right now.
+            </p>
+          ) : null}
+          {readyOccurrences.length > 0 ? (
+            <div className="space-y-2">
+              <FocusSectionHeader label="Open now" count={readyOccurrences.length} className="text-emerald-600" />
+              {readyOccurrences.map((item) => (
+                <OccurrenceItem
+                  key={item.id}
+                  item={item}
+                  density="comfortable"
+                  isToday
+                  now={now}
+                  zmanim={todayZmanim ?? undefined}
+                  timeFormat={preferences.timeFormat}
+                  onToggle={() => toggleOccurrence(item)}
+                />
+              ))}
+            </div>
+          ) : null}
+          {laterOccurrences.length > 0 ? (
+            <div className={cn("space-y-2", readyOccurrences.length > 0 && "mt-2 border-t border-slate-100 pt-2")}>
+              <FocusSectionHeader label="Later" count={laterOccurrences.length} />
+              {laterOccurrences.map((item) => (
+                <OccurrenceItem
+                  key={item.id}
+                  item={item}
+                  density="comfortable"
+                  isToday
+                  now={now}
+                  zmanim={todayZmanim ?? undefined}
+                  timeFormat={preferences.timeFormat}
+                  onToggle={() => toggleOccurrence(item)}
+                />
+              ))}
+            </div>
+          ) : null}
+          {missedOccurrences.length > 0 ? (
+            <div className={cn("mt-2", availableOccurrences.length > 0 && "border-t border-slate-100 pt-2")}>
+              <button
+                type="button"
+                onClick={() => setShowMissed((v) => !v)}
+                className="flex w-full items-center justify-between rounded-xl px-2 py-1.5 text-[11px] font-semibold text-red-400 transition hover:bg-red-50 hover:text-red-500"
+              >
+                <span>{showMissed ? "Hide" : "Show"} missed</span>
+                <span className="rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-bold tabular-nums text-red-500">
+                  {missedOccurrences.length}
+                </span>
+              </button>
+              {showMissed ? (
+                <div className="mt-1 space-y-2">
+                  {missedOccurrences.map((item) => (
+                    <OccurrenceItem
+                      key={item.id}
+                      item={item}
+                      density="comfortable"
+                      isToday
+                      now={now}
+                      zmanim={todayZmanim ?? undefined}
+                      timeFormat={preferences.timeFormat}
+                      onToggle={() => toggleOccurrence(item)}
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {completedOccurrences.length > 0 ? (
+            <div className={cn("mt-2", incompleteOccurrences.length > 0 && "border-t border-slate-100 pt-2")}>
+              <button
+                type="button"
+                onClick={() => setShowCompleted((value) => !value)}
+                className="flex w-full items-center justify-between rounded-xl px-2 py-1.5 text-[11px] font-semibold text-emerald-600 transition hover:bg-emerald-50 hover:text-emerald-700"
+              >
+                <span>{showCompleted ? "Hide" : "Show"} completed</span>
+                <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold tabular-nums text-emerald-600">
+                  {completedOccurrences.length}
+                </span>
+              </button>
+              {showCompleted ? (
+                <div className="mt-1 space-y-2">
+                  {completedOccurrences.map((item) => (
+                    <OccurrenceItem
+                      key={item.id}
+                      item={item}
+                      density="comfortable"
+                      isToday
+                      now={now}
+                      zmanim={todayZmanim ?? undefined}
+                      timeFormat={preferences.timeFormat}
+                      onToggle={() => toggleOccurrence(item)}
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       )}
 
@@ -554,6 +737,18 @@ export function TodaysFocusWidget({ storageScope }: { storageScope: string }) {
           defaultAmount={pendingAmount.defaultAmount}
           onConfirm={confirmPendingAmount}
           onCancel={() => setPendingAmount(null)}
+        />
+      ) : null}
+      {pendingMissedOverride ? (
+        <TimeWindowConfirm
+          goal={pendingMissedOverride.item.goal}
+          timeState={pendingMissedOverride.timeState}
+          caveat={pendingMissedOverride.caveat}
+          onConfirm={() => {
+            toggleOccurrence(pendingMissedOverride.item, { completedAfterWindow: true });
+            setPendingMissedOverride(null);
+          }}
+          onCancel={() => setPendingMissedOverride(null)}
         />
       ) : null}
     </div>

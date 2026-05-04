@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useLayoutEffect, useRef } fr
 import type { Goal } from "@/features/goals/types/goal";
 import type { DayAssignment } from "@/features/planner/lib/day-assignment-store";
 import type { CalendarPreferences } from "@/features/settings/types/calendar-preferences";
-import type { CalendarDayMetadata } from "@/features/calendar/types/calendar";
+import type { CalendarDayMetadata, CalendarView } from "@/features/calendar/types/calendar";
 import { loadGoals, saveGoals } from "@/features/goals/lib/goal-store";
 import {
   loadDayAssignments,
@@ -12,6 +12,7 @@ import {
   createAssignment,
   createDayAssignmentId,
   getPersistableDayAssignments,
+  areDayAssignmentsEqual,
 } from "@/features/planner/lib/day-assignment-store";
 import { loadGoalOrder, saveGoalOrder, reorderGlobal } from "@/features/planner/lib/goal-order-store";
 import { buildExcludedDates, computeDayProgress } from "@/features/goals/lib/goal-progress";
@@ -19,7 +20,7 @@ import { DAY_KEYS, isGoalApplicableOnDate } from "@/features/goals/lib/goal-appl
 import { materializePlannerWeekAssignments } from "@/features/planner/lib/materialize-goal-assignments";
 import { buildAssignmentDisplayGroups, parseSessionGroupActionId } from "@/features/planner/lib/day-assignment-groups";
 import { buildJewishTimesByDate } from "@/features/calendar/lib/jewish-times";
-import { startOfMonth, endOfMonth, startOfWeek, endOfWeek, toIsoDate } from "@/features/calendar/lib/date";
+import { startOfMonth, endOfMonth, startOfWeek, endOfWeek, toIsoDate } from "@/lib/date";
 import { computeRemainingCapacity } from "@/features/planner/lib/assignment-rules";
 import { computePeriodKey } from "@/features/planner/lib/period-key";
 import {
@@ -30,12 +31,14 @@ import {
   sumAssignmentAmounts,
 } from "@/features/calendar/lib/assignment-actions";
 import { toggleGoalDate, updateParentProgress } from "@/features/goals/lib/goal-mutations";
+import { computeDayZmanim } from "@/features/calendar/lib/zmanim";
+import { resolveLocation } from "@/features/calendar/lib/locations";
+import { getGoalTimePlacementForTime, MAARIV_GOAL_ID, type GoalTimeCaveat } from "@/features/calendar/lib/goal-time-window";
 import {
-  OMER_GOAL_ID,
-  clearLegacyOmerState,
-  readLegacyOmerState,
-  syncOmerGoalInList,
-} from "@/features/calendar/lib/omer-goal";
+  getAssignmentOccurrenceDate,
+  getGoalOccurrenceDateForPlannerDate,
+} from "@/features/calendar/lib/goal-day";
+import { syncTimeCaveatFollowup } from "@/features/calendar/lib/time-caveat-followups";
 import { fetchApi, isAbortError } from "@/lib/api-client";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -107,6 +110,7 @@ export interface UseCalendarDataReturn {
   openAssignmentModal: (pa: PendingAssignment) => void;
   /** Create a completed assignment (alreadyDone timeline drop path in handleDragEnd) */
   assignAlreadyCompleted: (goalId: string, isoDate: string, periodKey: string | undefined, scheduledTime: string, durationMins: number) => void;
+  syncTimeCaveatFollowup: (isoDate: string, caveat: GoalTimeCaveat | null) => void;
 }
 
 // ─── Module-level helpers ─────────────────────────────────────────────────────
@@ -118,6 +122,12 @@ function currentTimeString(): string {
   return `${hh}:${mm}`;
 }
 
+function getZmanimForDate(dateIso: string, preferences: CalendarPreferences) {
+  const location = resolveLocation(preferences);
+  if (!location) return null;
+  return computeDayZmanim(new Date(`${dateIso}T00:00:00`), location, preferences.timeFormat);
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useCalendarData({
@@ -126,7 +136,7 @@ export function useCalendarData({
   preferences,
 }: {
   storageScope: string;
-  calendar: { selectedDate: Date; selectedDateIso: string };
+  calendar: { view: CalendarView; selectedDate: Date; selectedDateIso: string };
   preferences: CalendarPreferences;
 }): UseCalendarDataReturn {
   // ── State ──────────────────────────────────────────────────────────────────
@@ -139,12 +149,21 @@ export function useCalendarData({
   const [capBlockedGoalId, setCapBlockedGoalId] = useState<string | null>(null);
   const goalsSaveControllerRef = useRef<AbortController | null>(null);
   const assignmentsSaveControllerRef = useRef<AbortController | null>(null);
+  const goalsRef = useRef<Goal[]>([]);
+  const dayAssignmentsRef = useRef<DayAssignment[]>([]);
+  const serverHydratedRef = useRef(false);
+  const isLoadedRef = useRef(false);
 
   // ── Derived ranges (cheap, computed inline) ────────────────────────────────
   const monthRangeStart = startOfWeek(startOfMonth(calendar.selectedDate), preferences.weekStartsOn);
   const monthRangeEnd = endOfWeek(endOfMonth(calendar.selectedDate), preferences.weekStartsOn);
 
   // ── Persist helpers ────────────────────────────────────────────────────────
+  useLayoutEffect(() => { goalsRef.current = goals; });
+  useLayoutEffect(() => { dayAssignmentsRef.current = dayAssignments; });
+  useLayoutEffect(() => { serverHydratedRef.current = serverHydrated; });
+  useLayoutEffect(() => { isLoadedRef.current = isLoaded; });
+
   const persistGoals = useCallback((next: Goal[]) => {
     if (!storageScope) return;
     saveGoals(storageScope, next);
@@ -191,17 +210,45 @@ export function useCalendarData({
       if (cancelled) return;
 
       if (goalsResult.status === "fulfilled" && Array.isArray(goalsResult.value.goals)) {
-        setGoals(goalsResult.value.goals);
-        persistGoals(goalsResult.value.goals);
+        const serverGoals = goalsResult.value.goals;
+        setGoals((current) => {
+          const serverMap = new Map(serverGoals.map((g) => [g.id, g]));
+          // Keep goals added locally while the fetch was in-flight.
+          const localOnly = current.filter((g) => !serverMap.has(g.id));
+          // For goals that exist on both sides, merge completedDates so a local completion
+          // that hasn't reached the server yet (pre-hydration toggle) is not discarded.
+          const merged = serverGoals.map((serverG) => {
+            const localG = current.find((g) => g.id === serverG.id);
+            if (!localG) return serverG;
+            const serverDates = serverG.completedDates ?? [];
+            const localDates = localG.completedDates ?? [];
+            const localAhead = localDates.filter((d) => !serverDates.includes(d));
+            if (localAhead.length === 0) return serverG;
+            return { ...serverG, completedDates: [...serverDates, ...localAhead] };
+          });
+          return localOnly.length > 0 ? [...localOnly, ...merged] : merged;
+        });
       } else if (goalsResult.status === "rejected") {
-        console.error("[use-calendar-data] fetch goals failed:", goalsResult.reason);
+        console.warn("[use-calendar-data] server goals sync failed; keeping local goals:", goalsResult.reason);
       }
 
       if (assignmentsResult.status === "fulfilled" && Array.isArray(assignmentsResult.value.assignments)) {
-        setDayAssignments(assignmentsResult.value.assignments);
-        persistDayAssignments(assignmentsResult.value.assignments);
+        const serverAssignments = assignmentsResult.value.assignments;
+        setDayAssignments((current) => {
+          const serverIds = new Set(serverAssignments.map((a) => a.id));
+          // Keep any assignments created locally while the fetch was in-flight.
+          const localOnly = current.filter((a) => !serverIds.has(a.id));
+          // For shared assignments, prefer the local version when it is completed and the
+          // server version is not — the completion hasn't been flushed to the server yet.
+          const merged = serverAssignments.map((serverA) => {
+            const localA = current.find((a) => a.id === serverA.id);
+            return localA?.completed && !serverA.completed ? localA : serverA;
+          });
+          return localOnly.length > 0 ? [...localOnly, ...merged] : merged;
+        });
+        // localStorage mirrors the merged state; let the state-change effect handle it.
       } else if (assignmentsResult.status === "rejected") {
-        console.error("[use-calendar-data] fetch assignments failed:", assignmentsResult.reason);
+        console.warn("[use-calendar-data] server assignments sync failed; keeping local assignments:", assignmentsResult.reason);
       }
 
       setServerHydrated(true);
@@ -230,21 +277,9 @@ export function useCalendarData({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [goals, calendar.selectedDateIso, preferences.weekStartsOn]);
 
-  // ── Omer goal sync ─────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!isLoaded) return;
-    const omerPresent = goals.some((g) => g.id === OMER_GOAL_ID);
-    const next = syncOmerGoalInList(goals, omerPresent, calendar.selectedDate, readLegacyOmerState());
-    if (next !== goals) {
-      setGoals(next);
-      persistGoals(next);
-    }
-    clearLegacyOmerState();
-  }, [calendar.selectedDateIso, goals, isLoaded, persistGoals]);
-
   // ── Server sync (goals) ────────────────────────────────────────────────────
   useEffect(() => {
-    if (!isLoaded || !serverHydrated) return;
+    if (!isLoaded) return;
     const t = setTimeout(() => {
       goalsSaveControllerRef.current?.abort();
       const controller = new AbortController();
@@ -266,11 +301,11 @@ export function useCalendarData({
         });
     }, 2000);
     return () => clearTimeout(t);
-  }, [goals, isLoaded, serverHydrated]);
+  }, [goals, isLoaded]);
 
   // ── Server sync (assignments) ──────────────────────────────────────────────
   useEffect(() => {
-    if (!isLoaded || !serverHydrated) return;
+    if (!isLoaded) return;
     const t = setTimeout(() => {
       const persistableAssignments = getPersistableDayAssignments(dayAssignments);
       assignmentsSaveControllerRef.current?.abort();
@@ -293,7 +328,32 @@ export function useCalendarData({
         });
     }, 2000);
     return () => clearTimeout(t);
-  }, [dayAssignments, isLoaded, serverHydrated]);
+  }, [dayAssignments, isLoaded]);
+
+  // Flush pending saves immediately when the page is hidden (reload, tab switch, close).
+  // keepalive:true lets the fetch complete even as the document unloads.
+  useEffect(() => {
+    function handleVisibilityChange() {
+      if (document.visibilityState !== "hidden") return;
+      if (!isLoadedRef.current || !serverHydratedRef.current) return;
+      goalsSaveControllerRef.current?.abort();
+      assignmentsSaveControllerRef.current?.abort();
+      fetch("/api/goals", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goals: goalsRef.current }),
+        keepalive: true,
+      }).catch(() => {});
+      fetch("/api/assignments", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assignments: getPersistableDayAssignments(dayAssignmentsRef.current) }),
+        keepalive: true,
+      }).catch(() => {});
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, []);
 
   useEffect(() => () => {
     goalsSaveControllerRef.current?.abort();
@@ -314,15 +374,19 @@ export function useCalendarData({
 
   // ── Materialized planner assignments ───────────────────────────────────────
   const plannerDayAssignments = useMemo(
-    () => materializePlannerWeekAssignments(goals, dayAssignments, calendar.selectedDate, excludedByGoal),
-    [goals, dayAssignments, calendar.selectedDate, excludedByGoal],
+    () => materializePlannerWeekAssignments(goals, dayAssignments, calendar.selectedDate, excludedByGoal, {
+      now: new Date(),
+      getZmanimForDate: (isoDate) => getZmanimForDate(isoDate, preferences),
+    }),
+    [goals, dayAssignments, calendar.selectedDate, calendar.view, excludedByGoal, preferences],
   );
 
   useLayoutEffect(() => {
-    if (plannerDayAssignments === dayAssignments) return;
+    if (areDayAssignmentsEqual(plannerDayAssignments, dayAssignments)) return;
+    // Only update React state. Completion toggles call persistDayAssignments directly;
+    // persisting derived/materialized state here would write intermediate values.
     setDayAssignments(plannerDayAssignments);
-    persistDayAssignments(plannerDayAssignments);
-  }, [dayAssignments, plannerDayAssignments, persistDayAssignments]);
+  }, [dayAssignments, plannerDayAssignments]);
 
   // ── Jewish times by date ───────────────────────────────────────────────────
   const jewishTimesByDate = useMemo(
@@ -410,10 +474,15 @@ export function useCalendarData({
     durationMins?: number,
   ) => {
     const goal = goals.find((g) => g.id === goalId);
-    if (!goal || !isGoalApplicableOnDate(goal, isoDate, { excludedByGoal, mode: "manual" })) return;
+    if (!goal) return;
+    const occurrenceDate = getGoalOccurrenceDateForPlannerDate(goal, isoDate, {
+      scheduledTime,
+      zmanim: getZmanimForDate(isoDate, preferences),
+    });
+    if (!isGoalApplicableOnDate(goal, occurrenceDate, { excludedByGoal, mode: "manual" })) return;
     setDayAssignments((prev) => {
       const isDuplicate = goal.type !== "quantified" && prev.some(
-        (a) => a.goalId === goalId && a.date === isoDate && !a.skipped,
+        (a) => a.goalId === goalId && a.date === isoDate && getAssignmentOccurrenceDate(a) === occurrenceDate && !a.skipped,
       );
       if (isDuplicate) return prev;
       if (goal.noGettingAhead && goal.target !== undefined) {
@@ -423,11 +492,26 @@ export function useCalendarData({
           : 0;
         if ((targetAmount ?? 1) > remaining + replacedContribution) return prev;
       }
-      const updated = [...prev, createAssignment(goalId, isoDate, targetAmount, periodKey, replacedAutoDate, scheduledTime, durationMins)];
+      const effectivePeriodKey = periodKey ?? computePeriodKey(goal.cadence, new Date(`${occurrenceDate}T00:00:00`));
+      const updated = [
+        ...prev,
+        createAssignment(
+          goalId,
+          isoDate,
+          targetAmount,
+          effectivePeriodKey,
+          replacedAutoDate,
+          scheduledTime,
+          durationMins,
+          undefined,
+          undefined,
+          occurrenceDate === isoDate ? undefined : occurrenceDate,
+        ),
+      ];
       persistDayAssignments(updated);
       return updated;
     });
-  }, [calendar.selectedDate, excludedByGoal, goals, persistDayAssignments]);
+  }, [calendar.selectedDate, excludedByGoal, goals, persistDayAssignments, preferences]);
 
   const assignWithTime = useCallback((
     goalId: string,
@@ -490,10 +574,10 @@ export function useCalendarData({
       }
       const datesToClear = new Set(
         assignmentsToRemove
-          .map((a) => a.date)
+          .map((a) => getAssignmentOccurrenceDate(a))
           .filter((date) =>
             goal?.completedDates?.includes(date) &&
-            !remainingAssignments.some((a) => a.date === date && a.completed),
+            !remainingAssignments.some((a) => getAssignmentOccurrenceDate(a) === date && a.completed),
           ),
       );
       if (datesToClear.size > 0) {
@@ -516,7 +600,12 @@ export function useCalendarData({
       const currentDate = assignmentsToMove[0].date;
       if (currentDate === newIsoDate && assignmentsToMove.every((a) => a.date === newIsoDate)) return prev;
       const goal = goals.find((g) => g.id === assignmentsToMove[0].goalId);
-      if (!goal || !isGoalApplicableOnDate(goal, newIsoDate, { excludedByGoal, mode: "manual" })) return prev;
+      if (!goal) return prev;
+      const firstOccurrenceDate = getGoalOccurrenceDateForPlannerDate(goal, newIsoDate, {
+        scheduledTime: assignmentsToMove[0].scheduledTime,
+        zmanim: getZmanimForDate(newIsoDate, preferences),
+      });
+      if (!isGoalApplicableOnDate(goal, firstOccurrenceDate, { excludedByGoal, mode: "manual" })) return prev;
       const assignmentIdsToMove = new Set(assignmentsToMove.map((a) => a.id));
       const replacedOwner = assignmentsToMove.find((a) => a.replacedAutoDate);
       let replacedAutoDate = replacedOwner?.replacedAutoDate;
@@ -527,60 +616,114 @@ export function useCalendarData({
       const replacedOwnerId = replacedOwner?.id ?? assignmentsToMove[0].id;
       const updated = prev.map((a) => {
         if (!assignmentIdsToMove.has(a.id)) return a;
-        if (a.id === replacedOwnerId) return { ...a, date: newIsoDate, replacedAutoDate };
-        return { ...a, date: newIsoDate, replacedAutoDate: undefined };
+        const occurrenceDate = getGoalOccurrenceDateForPlannerDate(goal, newIsoDate, {
+          scheduledTime: a.scheduledTime,
+          zmanim: getZmanimForDate(newIsoDate, preferences),
+        });
+        if (a.id === replacedOwnerId) {
+          return {
+            ...a,
+            date: newIsoDate,
+            occurrenceDate: occurrenceDate === newIsoDate ? undefined : occurrenceDate,
+            replacedAutoDate,
+          };
+        }
+        return {
+          ...a,
+          date: newIsoDate,
+          occurrenceDate: occurrenceDate === newIsoDate ? undefined : occurrenceDate,
+          replacedAutoDate: undefined,
+        };
       });
       persistDayAssignments(updated);
       return updated;
     });
-  }, [excludedByGoal, goals, persistDayAssignments]);
+  }, [excludedByGoal, goals, persistDayAssignments, preferences]);
+
+  const syncCaveatFollowup = useCallback((isoDate: string, caveat: GoalTimeCaveat | null) => {
+    const result = syncTimeCaveatFollowup(goalsRef.current, dayAssignmentsRef.current, isoDate, caveat);
+    if (result.goals !== goalsRef.current) {
+      setGoals(result.goals);
+      persistGoals(result.goals);
+    }
+    if (result.dayAssignments !== dayAssignmentsRef.current) {
+      setDayAssignments(result.dayAssignments);
+      persistDayAssignments(result.dayAssignments);
+    }
+  }, [persistDayAssignments, persistGoals]);
+
+  const applyCompletionTimeCaveat = useCallback((goal: Goal, isoDate: string, time: string) => {
+    if (isoDate !== toIsoDate(new Date())) return;
+    const location = resolveLocation(preferences);
+    const zmanim = location
+      ? computeDayZmanim(new Date(`${isoDate}T00:00:00`), location, preferences.timeFormat) ?? undefined
+      : undefined;
+    const placement = getGoalTimePlacementForTime(goal, zmanim, time);
+    if (placement.caveat) syncCaveatFollowup(isoDate, placement.caveat);
+    else if (goal.id === MAARIV_GOAL_ID) syncCaveatFollowup(isoDate, null);
+  }, [syncCaveatFollowup, preferences]);
 
   const toggleAssignment = useCallback((id: string) => {
-    const assignmentsToToggle = resolveAssignmentsForAction(plannerDayAssignments, id);
+    const initialAssignmentsToToggle = resolveAssignmentsForAction(plannerDayAssignments, id);
+    if (initialAssignmentsToToggle.length === 0) return;
+    const initialAssignment = initialAssignmentsToToggle[0];
+    const goal = goals.find((g) => g.id === initialAssignment.goalId);
+    const nowCompleted = !initialAssignmentsToToggle.every((item) => item.completed);
+    const occurrenceDatesToToggle = goal?.cadence === "daily" && goal.type === "binary"
+      ? new Set(initialAssignmentsToToggle.map((item) => getAssignmentOccurrenceDate(item)))
+      : null;
+    const assignmentsToToggle = occurrenceDatesToToggle && goal
+      ? plannerDayAssignments.filter(
+          (item) =>
+            item.goalId === initialAssignment.goalId &&
+            occurrenceDatesToToggle.has(getAssignmentOccurrenceDate(item)) &&
+            !item.skipped,
+        )
+      : initialAssignmentsToToggle;
     if (assignmentsToToggle.length === 0) return;
     const assignmentIdsToToggle = new Set(assignmentsToToggle.map((a) => a.id));
-    const assignment = assignmentsToToggle[0];
-    const nowCompleted = !assignmentsToToggle.every((item) => item.completed);
+    const assignment = initialAssignment;
     const isReopeningCollapsedGroup = Boolean(
       parseSessionGroupActionId(id) &&
       !nowCompleted &&
-      assignmentsToToggle.length > 1 &&
-      assignmentsToToggle.every((item) => item.completed),
+      initialAssignmentsToToggle.length > 1 &&
+      initialAssignmentsToToggle.every((item) => item.completed),
     );
-    const goal = goals.find((g) => g.id === assignment.goalId);
 
-    // Keep completedDates in sync for daily binary goals
+    // Keep completedDates in sync for daily binary goals.
+    // Always use a functional update so idempotency is checked against fresh state,
+    // not the stale closure — the old guard (nowCompleted !== alreadyInDates) could
+    // silently skip the write if the closure's goal snapshot was already out of date.
     if (goal?.cadence === "daily" && goal?.type === "binary") {
-      const toggleDates = [...new Set(assignmentsToToggle.map((item) => item.date))];
-      const alreadyInDates = toggleDates.some((date) => goal.completedDates?.includes(date) ?? false);
-      if (nowCompleted !== alreadyInDates) {
-        setGoals((prev) => {
-          const updated = prev.map((g) => {
-            if (g.id !== assignment.goalId) return g;
-            const dates = g.completedDates ?? [];
-            let newDates = [...dates];
-            if (nowCompleted) {
-              for (const date of toggleDates) {
-                if (!newDates.includes(date)) newDates.push(date);
-              }
-            } else {
-              newDates = newDates.filter((date) =>
-                !toggleDates.includes(date) ||
-                plannerDayAssignments.some(
-                  (item) =>
-                    item.goalId === assignment.goalId &&
-                    item.date === date &&
-                    item.completed &&
-                    !assignmentIdsToToggle.has(item.id),
-                ),
-              );
-            }
-            return { ...g, completedDates: newDates };
-          });
-          persistGoals(updated);
-          return updated;
-        });
-      }
+      const toggleDates = [...new Set(assignmentsToToggle.map((item) => getAssignmentOccurrenceDate(item)))];
+      setGoals((prev) => {
+        const g = prev.find((item) => item.id === assignment.goalId);
+        if (!g) return prev;
+        const dates = g.completedDates ?? [];
+        let newDates: string[];
+        if (nowCompleted) {
+          const toAdd = toggleDates.filter((d) => !dates.includes(d));
+          if (toAdd.length === 0) return prev; // already up to date — true idempotency on fresh state
+          newDates = [...dates, ...toAdd];
+        } else {
+          newDates = dates.filter((date) =>
+            !toggleDates.includes(date) ||
+            plannerDayAssignments.some(
+              (item) =>
+                item.goalId === assignment.goalId &&
+                getAssignmentOccurrenceDate(item) === date &&
+                item.completed &&
+                !assignmentIdsToToggle.has(item.id),
+            ),
+          );
+          if (newDates.length === dates.length) return prev; // nothing to remove
+        }
+        const updated = prev.map((item) =>
+          item.id === assignment.goalId ? { ...item, completedDates: newDates } : item,
+        );
+        persistGoals(updated);
+        return updated;
+      });
     }
 
     // Intercept quantified completions — show amount prompt
@@ -588,6 +731,12 @@ export function useCalendarData({
       const def = assignment.targetAmount ?? suggestedAssignmentAmount(goal);
       setAmountPrompt({ kind: "completion", id, defaultAmount: def, date: assignment.date });
       return;
+    }
+
+    const timeStr = currentTimeString();
+    const completionTime = assignment.scheduledTime ?? timeStr;
+    if (nowCompleted && goal) {
+      applyCompletionTimeCaveat(goal, assignment.date, completionTime);
     }
 
     // Feed progress to parent project goal
@@ -604,7 +753,6 @@ export function useCalendarData({
     }
 
     setDayAssignments((prev) => {
-      const timeStr = currentTimeString();
       if (isReopeningCollapsedGroup) {
         const updated = reopenCollapsedSessionGroupAsSingleAssignment(prev, id);
         persistDayAssignments(updated);
@@ -619,28 +767,45 @@ export function useCalendarData({
       persistDayAssignments(updated);
       return updated;
     });
-  }, [plannerDayAssignments, goals, persistGoals, persistDayAssignments]);
+  }, [
+    plannerDayAssignments,
+    goals,
+    preferences,
+    persistGoals,
+    persistDayAssignments,
+    applyCompletionTimeCaveat,
+  ]);
 
   const setScheduledTime = useCallback((assignmentId: string, time: string | null) => {
     setDayAssignments((prev) => {
-      const updated = prev.map((a) =>
-        a.id === assignmentId
-          ? {
-              ...a,
+      const updated = prev.map((a) => {
+        if (a.id !== assignmentId) return a;
+        const goal = goals.find((entry) => entry.id === a.goalId);
+        const occurrenceDate = goal
+          ? getGoalOccurrenceDateForPlannerDate(goal, a.date, {
               scheduledTime: time ?? undefined,
-              completedAt: a.completed && time ? time : a.completedAt,
-            }
-          : a,
-      );
+              zmanim: getZmanimForDate(a.date, preferences),
+            })
+          : getAssignmentOccurrenceDate(a);
+        return {
+          ...a,
+          occurrenceDate: occurrenceDate === a.date ? undefined : occurrenceDate,
+          periodKey: goal ? computePeriodKey(goal.cadence, new Date(`${occurrenceDate}T00:00:00`)) : a.periodKey,
+          scheduledTime: time ?? undefined,
+          completedAt: a.completed && time ? time : a.completedAt,
+        };
+      });
       persistDayAssignments(updated);
       return updated;
     });
-  }, [persistDayAssignments]);
+  }, [goals, persistDayAssignments, preferences]);
 
   const unscheduleAssignment = useCallback((assignmentId: string) => {
     setDayAssignments((prev) => {
       const updated = prev.map((a) =>
-        a.id === assignmentId ? { ...a, scheduledTime: undefined, durationMins: undefined } : a,
+        a.id === assignmentId
+          ? { ...a, occurrenceDate: undefined, scheduledTime: undefined, durationMins: undefined }
+          : a,
       );
       persistDayAssignments(updated);
       return updated;
@@ -693,27 +858,46 @@ export function useCalendarData({
     source: "checklist" | "default" = "default",
   ) => {
     const goal = goals.find((g) => g.id === goalId);
-    const isDone = goal?.completedDates?.includes(isoDate) ?? false;
+    const occurrenceDate = isoDate;
+    const plannerIso = source === "checklist" ? calendar.selectedDateIso : isoDate;
+    const isDone = goal?.completedDates?.includes(occurrenceDate) ?? false;
 
     if (!isDone && goal?.type === "quantified") {
-      setAmountPrompt({ kind: "date-completion", goalId, isoDate, defaultAmount: suggestedAssignmentAmount(goal), source });
+      setAmountPrompt({ kind: "date-completion", goalId, isoDate: occurrenceDate, defaultAmount: suggestedAssignmentAmount(goal), source });
       return;
     }
 
     if (!isDone && goal && source === "checklist") {
       const timeStr = currentTimeString();
+      applyCompletionTimeCaveat(goal, plannerIso, timeStr);
       const periodKey = goal.cadence === "daily"
         ? undefined
-        : computePeriodKey(goal.cadence, new Date(isoDate + "T00:00:00"));
+        : computePeriodKey(goal.cadence, new Date(occurrenceDate + "T00:00:00"));
       setDayAssignments((prev) => {
         const isDuplicate = goal.type !== "quantified" && prev.some(
-          (a) => a.goalId === goalId && a.date === isoDate && !a.skipped,
+          (a) => (
+            a.goalId === goalId &&
+            a.date === plannerIso &&
+            getAssignmentOccurrenceDate(a) === occurrenceDate &&
+            !a.skipped
+          ),
         );
         if (isDuplicate) return prev;
         const updated = [
           ...prev,
           {
-            ...createAssignment(goalId, isoDate, undefined, periodKey, undefined, timeStr, preferences.timelineDefaultDurationMins),
+            ...createAssignment(
+              goalId,
+              plannerIso,
+              undefined,
+              periodKey,
+              undefined,
+              timeStr,
+              preferences.timelineDefaultDurationMins,
+              undefined,
+              undefined,
+              occurrenceDate === plannerIso ? undefined : occurrenceDate,
+            ),
             completed: true,
             completedAt: timeStr,
           },
@@ -723,7 +907,7 @@ export function useCalendarData({
       });
       if (goal.cadence === "daily" && goal.type === "binary") {
         setGoals((prev) => {
-          const updated = toggleGoalDate(prev, goalId, isoDate);
+          const updated = toggleGoalDate(prev, goalId, occurrenceDate);
           persistGoals(updated);
           return updated;
         });
@@ -731,12 +915,16 @@ export function useCalendarData({
       return;
     }
 
+    if (!isDone && goal) {
+      applyCompletionTimeCaveat(goal, plannerIso, currentTimeString());
+    }
+
     setGoals((prev) => {
-      const updated = toggleGoalDate(prev, goalId, isoDate);
+      const updated = toggleGoalDate(prev, goalId, occurrenceDate);
       persistGoals(updated);
       return updated;
     });
-  }, [goals, preferences.timelineDefaultDurationMins, persistDayAssignments, persistGoals]);
+  }, [calendar.selectedDateIso, goals, preferences.timelineDefaultDurationMins, persistDayAssignments, persistGoals, applyCompletionTimeCaveat]);
 
   // ── Pending modal confirmations ────────────────────────────────────────────
 
@@ -758,6 +946,8 @@ export function useCalendarData({
       const assignment = plannerDayAssignments.find((a) => a.id === id);
       const goal = assignment ? goals.find((g) => g.id === assignment.goalId) : undefined;
       if (!goal || !assignment) return;
+      const completionTimeForCaveat = assignment.scheduledTime ?? currentTimeString();
+      applyCompletionTimeCaveat(goal, assignment.date, completionTimeForCaveat);
       setDayAssignments((prev) => {
         const original = prev.find((a) => a.id === id);
         if (!original) return prev;
@@ -790,15 +980,19 @@ export function useCalendarData({
     }
 
     const { goalId, isoDate, source } = prompt;
+    const occurrenceDate = isoDate;
+    const plannerIso = source === "checklist" ? calendar.selectedDateIso : isoDate;
     const goal = goals.find((g) => g.id === goalId);
-    const periodKey = goal ? computePeriodKey(goal.cadence, new Date(isoDate + "T00:00:00")) : undefined;
+    const periodKey = goal ? computePeriodKey(goal.cadence, new Date(occurrenceDate + "T00:00:00")) : undefined;
     const timeStr = currentTimeString();
+    if (goal) applyCompletionTimeCaveat(goal, plannerIso, timeStr);
     setDayAssignments((prev) => {
-      if (prev.some((a) => a.goalId === goalId && a.date === isoDate)) return prev;
+      if (prev.some((a) => a.goalId === goalId && a.date === plannerIso && getAssignmentOccurrenceDate(a) === occurrenceDate)) return prev;
       const newAssignment: DayAssignment = {
         id: createDayAssignmentId(),
         goalId,
-        date: isoDate,
+        date: plannerIso,
+        occurrenceDate: occurrenceDate === plannerIso ? undefined : occurrenceDate,
         targetAmount: amount,
         periodKey: periodKey ?? undefined,
         completed: true,
@@ -810,7 +1004,7 @@ export function useCalendarData({
       persistDayAssignments(updated);
       return updated;
     });
-  }, [amountPrompt, goals, assign, plannerDayAssignments, preferences.timelineDefaultDurationMins, persistDayAssignments, persistGoals]);
+  }, [amountPrompt, calendar.selectedDateIso, goals, assign, plannerDayAssignments, preferences.timelineDefaultDurationMins, persistDayAssignments, persistGoals, applyCompletionTimeCaveat]);
 
   const clearPending = useCallback(() => {
     setAmountPrompt(null);
@@ -826,15 +1020,30 @@ export function useCalendarData({
   ) => {
     const goal = goals.find((g) => g.id === goalId);
     if (!goal) return;
+    const occurrenceDate = getGoalOccurrenceDateForPlannerDate(goal, isoDate, {
+      scheduledTime,
+      zmanim: getZmanimForDate(isoDate, preferences),
+    });
     setDayAssignments((prev) => {
       const isDuplicate = goal.type !== "quantified" && prev.some(
-        (a) => a.goalId === goalId && a.date === isoDate && !a.skipped,
+        (a) => a.goalId === goalId && a.date === isoDate && getAssignmentOccurrenceDate(a) === occurrenceDate && !a.skipped,
       );
       if (isDuplicate) return prev;
       const updated = [
         ...prev,
         {
-          ...createAssignment(goalId, isoDate, undefined, periodKey, undefined, scheduledTime, durationMins),
+          ...createAssignment(
+            goalId,
+            isoDate,
+            undefined,
+            periodKey ?? computePeriodKey(goal.cadence, new Date(`${occurrenceDate}T00:00:00`)),
+            undefined,
+            scheduledTime,
+            durationMins,
+            undefined,
+            undefined,
+            occurrenceDate === isoDate ? undefined : occurrenceDate,
+          ),
           completed: true,
           completedAt: scheduledTime,
         },
@@ -842,7 +1051,7 @@ export function useCalendarData({
       persistDayAssignments(updated);
       return updated;
     });
-  }, [goals, persistDayAssignments]);
+  }, [goals, persistDayAssignments, preferences]);
 
   const openCapBlockedModal = useCallback((goalId: string) => setCapBlockedGoalId(goalId), []);
   const openAssignmentModal = useCallback((pa: PendingAssignment) => {
@@ -879,5 +1088,6 @@ export function useCalendarData({
     openCapBlockedModal,
     openAssignmentModal,
     assignAlreadyCompleted,
+    syncTimeCaveatFollowup: syncCaveatFollowup,
   };
 }

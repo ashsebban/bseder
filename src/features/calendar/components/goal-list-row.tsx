@@ -75,6 +75,7 @@ export function GoalListRow({
   checkbox,
   content,
   trailing,
+  align = "center",
 }: {
   density?: GoalListRowDensity;
   className?: string;
@@ -85,15 +86,17 @@ export function GoalListRow({
   checkbox: ReactNode;
   content: ReactNode;
   trailing?: ReactNode;
+  align?: "center" | "start";
 }) {
   const classes = DENSITY_CLASSES[density];
+  const alignClass = align === "start" ? "items-start" : "items-center";
 
   return (
-    <div ref={rowRef} style={style} className={cn(classes.root, className)} {...rootProps}>
-      <div className={classes.leading}>{leading}</div>
-      <div className={classes.checkbox}>{checkbox}</div>
+    <div ref={rowRef} style={style} className={cn(classes.root, alignClass, className)} {...rootProps}>
+      <div className={cn(classes.leading, align === "start" && "pt-[3px]")}>{leading}</div>
+      <div className={cn(classes.checkbox, align === "start" && "pt-[2px]")}>{checkbox}</div>
       <div className={classes.content}>{content}</div>
-      {trailing ? <div className={classes.trailing}>{trailing}</div> : null}
+      {trailing ? <div className={cn(classes.trailing, align === "start" && "pt-[2px]")}>{trailing}</div> : null}
     </div>
   );
 }

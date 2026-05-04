@@ -6,8 +6,6 @@ import { defaultCalendarPreferences } from "@/features/settings/lib/calendar-pre
 import { toPersistedCalendarPreferences } from "@/features/settings/lib/calendar-preference-utils";
 import { useCalendarPreferences } from "@/features/settings/hooks/use-calendar-preferences";
 import type { CalendarPreferences } from "@/features/settings/types/calendar-preferences";
-import { loadGoals, saveGoals } from "@/features/goals/lib/goal-store";
-import { OMER_GOAL_ID, clearLegacyOmerState, readLegacyOmerState, syncOmerGoalInList } from "@/features/calendar/lib/omer-goal";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 
@@ -54,24 +52,6 @@ export function useSyncedCalendarPreferences(
       if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
     };
   }, []);
-
-  useEffect(() => {
-    if (!hydrated || !storageScope) return;
-
-    const currentGoals = loadGoals(storageScope);
-    const omerPresent = currentGoals.some((g) => g.id === OMER_GOAL_ID);
-    const nextGoals = syncOmerGoalInList(
-      currentGoals,
-      omerPresent,
-      new Date(),
-      readLegacyOmerState(),
-    );
-
-    if (nextGoals !== currentGoals) {
-      saveGoals(storageScope, nextGoals);
-    }
-    clearLegacyOmerState();
-  }, [hydrated, storageScope]);
 
   return {
     preferences,

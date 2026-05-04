@@ -43,14 +43,19 @@ test("weekly quantified goals materialize concrete assignments for their active 
 
   assert.deepEqual(
     assignments.map((assignment) => ({
+      id: assignment.id,
       date: assignment.date,
       targetAmount: assignment.targetAmount,
       generated: assignment.generated,
     })),
     [
-      { date: "2026-03-05", targetAmount: 5, generated: true },
-      { date: "2026-03-06", targetAmount: 5, generated: true },
+      { id: "generated:goal-1:2026-03-05", date: "2026-03-05", targetAmount: 5, generated: true },
+      { id: "generated:goal-1:2026-03-06", date: "2026-03-06", targetAmount: 5, generated: true },
     ],
+  );
+  assert.strictEqual(
+    materializePlannerWeekAssignments([goal], assignments, new Date(2026, 2, 5), new Map()),
+    assignments,
   );
 });
 
@@ -65,7 +70,6 @@ test("occurrence builder renders only concrete assignments for the date", () => 
     date: new Date(2026, 2, 5),
     goals: [goal],
     dayAssignments: [makeAssignment({ targetAmount: 5 })],
-    excludedByGoal: new Map(),
   });
 
   assert.equal(occurrences.length, 1);
@@ -114,7 +118,6 @@ test("occurrences sort by goal order regardless of source", () => {
     date: new Date(2026, 2, 5),
     goals,
     dayAssignments: assignments,
-    excludedByGoal: new Map(),
   });
 
   const sorted = sortGoalOccurrences(occurrences, ["goal-2", "goal-1"]);

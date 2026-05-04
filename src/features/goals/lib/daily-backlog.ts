@@ -9,7 +9,8 @@ export interface DailyBacklogEntry {
 }
 
 export function isDailyBinaryBacklogGoal(goal: Goal): boolean {
-  return goal.cadence === "daily" && goal.type === "binary" && goal.ifUnfinished === "backlog";
+  const carryover = goal.carryover ?? (goal.ifUnfinished === "backlog" ? "backlog" : "drop");
+  return goal.cadence === "daily" && goal.type === "binary" && carryover === "backlog";
 }
 
 export function getDailyBacklogEntries(goal: Goal, referenceDate: Date): DailyBacklogEntry[] {

@@ -1,10 +1,31 @@
-import type { CalendarPreferences, HavdalahOpinion } from "@/features/settings/types/calendar-preferences";
+import type { CalendarPreferences, HavdalahOpinion, Nusach } from "@/features/settings/types/calendar-preferences";
 import { buildScopedStorageKey, purgeLegacyPlannerStorage } from "../../../lib/user-scoped-browser-storage";
 
 export const CALENDAR_PREFERENCES_STORAGE_KEY = "planner.calendar-preferences.v1";
 
+export const NUSACH_HAVDALAH: Record<Nusach, HavdalahOpinion> = {
+  ashkenaz: "42",
+  sfard: "72",
+  sephardi: "tzeit-8_5",
+  temanim: "tzeit-8_5",
+  chabad: "50",
+  custom: "tzeit-8_5",
+};
+
+export function getEffectiveHavdalahOpinion(
+  preferences: Pick<CalendarPreferences, "nusach" | "havdalahMode" | "havdalahOpinion">,
+): HavdalahOpinion {
+  if (preferences.havdalahMode === "nusach") {
+    return NUSACH_HAVDALAH[preferences.nusach];
+  }
+  return preferences.havdalahOpinion;
+}
+
 export const defaultCalendarPreferences: CalendarPreferences = {
   locationKey: "new-york",
+  nusach: "ashkenaz",
+  havdalahMode: "nusach",
+  observanceLevel: "unknown",
   timeFormat: "12h",
   showHebrewDates: true,
   havdalahOpinion: "tzeit-8_5",
@@ -16,6 +37,9 @@ export const defaultCalendarPreferences: CalendarPreferences = {
   showRoshChodesh: true,
   timelineSnapMins: 15,
   timelineDefaultDurationMins: 30,
+  showHebrewDatesOnGoals: false,
+  hebrewDateFormat: "english",
+  hebrewDateIncludeYear: false,
 };
 
 export function getHavdalahOptions(opinion: HavdalahOpinion) {

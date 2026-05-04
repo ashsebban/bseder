@@ -10,12 +10,18 @@
  */
 
 import { HDate, months } from "@hebcal/core";
-import { toIsoDate } from "@/lib/date";
-import { OMER_GOAL_ID, buildPersistedOmerGoal } from "@/features/calendar/lib/omer-goal";
+import { parseIsoDate, toIsoDate } from "@/lib/date";
 import type { Goal } from "@/features/goals/types/goal";
-import type { PackAddContext } from "@/features/goals/lib/packs/types";
+import type { CalendarPreferences } from "@/features/settings/types/calendar-preferences";
 
-export type { PackAddContext };
+export const OMER_GOAL_ID = "__omer__";
+
+export interface PackAddContext {
+  goals: Goal[];
+  setGoals: (goals: Goal[]) => void;
+  updatePreference: <K extends keyof CalendarPreferences>(key: K, value: CalendarPreferences[K]) => void;
+  today: Date;
+}
 
 // ─── Categories ──────────────────────────────────────────────────────────────
 
@@ -78,6 +84,36 @@ function getChanukahRange(today: Date): { startDate: string; endDate: string } {
   };
 }
 
+function getOmerRange(today: Date): { startDate: string; endDate: string } {
+  let year = new HDate(today).getFullYear();
+  if (new HDate(5, months.SIVAN, year).greg() < today) year++;
+  return {
+    startDate: toIsoDate(new HDate(16, months.NISAN, year).greg()),
+    endDate: toIsoDate(new HDate(5, months.SIVAN, year).greg()),
+  };
+}
+
+function buildPersistedOmerGoal(today: Date): Goal {
+  const { startDate, endDate } = getOmerRange(today);
+  return {
+    id: OMER_GOAL_ID,
+    title: "Sefirat HaOmer",
+    cadence: "seasonal",
+    status: "ongoing",
+    type: "binary",
+    dayModel: "jewish",
+    activeDays: ALL_DAYS,
+    startsAt: "Tzais HaKochavim",
+    expiresAt: "Shkiyah",
+    lockInDays: true,
+    ifUnfinished: "forgive",
+    programKey: "omer",
+    startDate,
+    endDate,
+    completedDates: [],
+  };
+}
+
 function getElulRange(today: Date, endDay: 28 | 29 = 29): { startDate: string; endDate: string } {
   let year = new HDate(today).getFullYear();
   if (new HDate(endDay, months.ELUL, year).greg() < today) year++;
@@ -133,14 +169,41 @@ export function isPrebuiltGoal(id: string): boolean {
   return PREBUILT_GOAL_BY_ID.has(id);
 }
 
+function normalizeComparableGoal(goal: Goal): Partial<Goal> {
+  return {
+    title: goal.title,
+    cadence: goal.cadence,
+    type: goal.type,
+    target: goal.target,
+    targetUnit: goal.targetUnit,
+    activeDays: goal.activeDays,
+    excludes: goal.excludes,
+    startsAt: goal.startsAt,
+    expiresAt: goal.expiresAt,
+    programKey: goal.programKey,
+    ifUnfinished: goal.ifUnfinished,
+    noGettingAhead: goal.noGettingAhead,
+    preferredMonthDay: goal.preferredMonthDay,
+    lockInDays: goal.lockInDays,
+    endDate: goal.endDate,
+    endAfterPeriods: goal.endAfterPeriods,
+    dueDate: goal.dueDate,
+  };
+}
+
 /**
- * True if the goal originated as a prebuilt but the user has renamed it.
- * Used to show a "Custom" badge instead of "Official".
+ * True if the goal originated as a prebuilt but the user changed its setup.
+ * Progress/status fields are ignored so completing or pausing a preset does not
+ * make it look edited.
  */
-export function isCustomizedPrebuilt(goal: { id: string; title: string }): boolean {
+export function isCustomizedPrebuilt(goal: Goal): boolean {
   const def = PREBUILT_GOAL_BY_ID.get(goal.id);
   if (!def) return false;
-  return goal.title !== def.name;
+  if (!def.buildGoal) return goal.title !== def.name;
+
+  const referenceDate = parseIsoDate(goal.startDate ?? "") ?? new Date();
+  const original = def.buildGoal(referenceDate);
+  return JSON.stringify(normalizeComparableGoal(goal)) !== JSON.stringify(normalizeComparableGoal(original));
 }
 
 // ─── Goal definitions ─────────────────────────────────────────────────────────
@@ -165,7 +228,7 @@ export const PREBUILT_GOALS: PrebuiltGoalDef[] = [
       startsAt: "Misheyakir",
       expiresAt: "Shkiyah",
       lockInDays: true,
-      ifUnfinished: "kill-streak",
+      ifUnfinished: "track-failure",
       startDate: toIsoDate(today),
       completedDates: [],
     }),
@@ -249,6 +312,7 @@ export const PREBUILT_GOALS: PrebuiltGoalDef[] = [
       cadence: "daily",
       status: "ongoing",
       type: "binary",
+      dayModel: "jewish",
       activeDays: ALL_DAYS,
       startsAt: "Tzais HaKochavim",
       expiresAt: "Alot HaShachar",
@@ -271,6 +335,7 @@ export const PREBUILT_GOALS: PrebuiltGoalDef[] = [
       cadence: "daily",
       status: "ongoing",
       type: "binary",
+      dayModel: "jewish",
       activeDays: ALL_DAYS,
       startsAt: "Tzais HaKochavim",
       expiresAt: "Alot HaShachar",

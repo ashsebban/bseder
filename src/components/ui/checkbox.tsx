@@ -18,6 +18,7 @@ export interface CheckboxProps {
   className?: string;
   uncheckedClassName?: string;
   checkedClassName?: string;
+  disabled?: boolean;
   "aria-label"?: string;
 }
 
@@ -28,6 +29,7 @@ export function Checkbox({
   className,
   uncheckedClassName,
   checkedClassName,
+  disabled = false,
   "aria-label": ariaLabel,
 }: CheckboxProps) {
   const sizeClass = sizeClasses[size];
@@ -37,14 +39,18 @@ export function Checkbox({
       type="button"
       onClick={(event) => {
         event.stopPropagation();
+        if (disabled) return;
         onChange();
       }}
       onPointerDown={(event) => event.stopPropagation()}
       aria-label={ariaLabel ?? (checked ? "Mark incomplete" : "Mark complete")}
       aria-pressed={checked}
+      aria-disabled={disabled}
+      disabled={disabled}
       className={cn(
         "flex shrink-0 items-center justify-center rounded-full border-2 transition-all duration-150",
         sizeClass.box,
+        disabled && "cursor-not-allowed opacity-50",
         checked
           ? cn("border-success bg-success", checkedClassName)
           : cn("border-slate-300 bg-white hover:border-brand/50", uncheckedClassName),
