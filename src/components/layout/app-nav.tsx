@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
-import { StarOfDavid } from "@/components/ui/star-of-david";
+import { BesederLogo } from "@/components/ui/beseder-logo";
 import { UserMenu } from "@/components/layout/user-menu";
 import { siteConfig } from "@/config/site";
 import { cn } from "@/lib/cn";
@@ -47,7 +47,7 @@ export function AppNav({ maxWidthClassName = "max-w-[1360px]" }: { maxWidthClass
       <div className={cn("mx-auto flex items-center gap-6 px-6 py-3 md:px-8", maxWidthClassName)}>
         {/* Logo */}
         <div className="flex items-center gap-2.5">
-          <StarOfDavid className="h-6 w-6 text-brand" />
+          <BesederLogo className="h-7 w-7" />
           <span className="text-base font-bold tracking-tight text-text">{siteConfig.name}</span>
         </div>
 
