@@ -5,6 +5,7 @@ import { requireAuth } from "@/lib/require-auth";
 import { ApiRouteError, readJsonBody, withApiHandler } from "@/lib/api-route";
 import { isoAndHHMMToUtcDateTime, isoToUtcDate } from "@/lib/date";
 import type { Assignment } from "@/features/goals/types/goal";
+import { dbRecordToDayAssignment } from "@/features/goals/lib/goal-db-transform";
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -127,34 +128,7 @@ export const GET = withApiHandler(async () => {
     orderBy: { date: "asc" },
   });
 
-  // Map DB rows to the Assignment type. Date fields come back as Date objects.
-  const assignments: Assignment[] = records.map((r) => ({
-    id: r.id,
-    goalId: r.goalId,
-    userId: r.userId,
-    date: r.date.toISOString().slice(0, 10),
-    occurrenceDate: r.occurrenceDate?.toISOString().slice(0, 10),
-    hebrewYear: r.hebrewYear ?? undefined,
-    hebrewMonth: r.hebrewMonth ?? undefined,
-    hebrewDay: r.hebrewDay ?? undefined,
-    seasonalIndex: r.seasonalIndex ?? undefined,
-    periodKey: r.periodKey ?? undefined,
-    windowStart: r.windowStart?.toISOString(),
-    windowEnd: r.windowEnd?.toISOString(),
-    targetAmount: r.targetAmount ?? undefined,
-    scheduledTime: r.scheduledTime ?? undefined,
-    durationMins: r.durationMins ?? undefined,
-    completed: r.completed,
-    completedAt: r.completedAt?.toISOString(),
-    actualAmount: r.actualAmount ?? undefined,
-    status: r.status as Assignment["status"],
-    materializedReason: r.materializedReason as Assignment["materializedReason"],
-    originalDate: r.originalDate?.toISOString().slice(0, 10),
-    note: r.note ?? undefined,
-    createdAt: r.createdAt.toISOString(),
-    updatedAt: r.updatedAt.toISOString(),
-    deletedAt: r.deletedAt?.toISOString(),
-  }));
+  const assignments = records.map(dbRecordToDayAssignment);
 
   return NextResponse.json({ assignments });
 }, { label: "api/assignments GET" });

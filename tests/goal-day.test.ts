@@ -85,7 +85,7 @@ test("the first Omer count starts on the second night of Pesach", () => {
   );
 });
 
-test("early Maariv caveat window counts toward the coming obligation date", () => {
+test("early Maariv stays on the planner date and uses the repeat-Shema caveat separately", () => {
   const goal = makeGoal({
     id: "__pack_maariv__",
     dayModel: "jewish",
@@ -97,7 +97,7 @@ test("early Maariv caveat window counts toward the coming obligation date", () =
       scheduledTime: "18:30",
       zmanim: fakeZmanim,
     }),
-    "2026-04-28",
+    "2026-04-27",
   );
 });
 

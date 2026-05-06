@@ -12,7 +12,7 @@ import { ModelCard } from "@/features/dbvis/components/model-card";
 
 type Tab = "models" | "relations" | "computed";
 
-const GROUP_ORDER: ModelGroup[] = ["auth", "goals", "assignments", "admin"];
+const GROUP_ORDER: ModelGroup[] = ["auth", "calendar", "goals", "assignments", "admin"];
 
 export function SchemaVisualizer() {
   const [activeTab, setActiveTab] = useState<Tab>("models");
