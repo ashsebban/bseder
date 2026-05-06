@@ -859,6 +859,7 @@ export function CalendarWorkspace({
                     view={calendar.view === "month" ? "month" : "week"}
                     weekStartsOn={preferences.weekStartsOn}
                     onRenameGoal={renameGoal}
+                    onToggleDate={toggleDate}
                   />
                 </div>
               </div>

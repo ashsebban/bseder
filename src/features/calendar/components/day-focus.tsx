@@ -254,10 +254,6 @@ function EventBlock({
   const timeRange = `${formatMinutesAsTime(startMins, timeFormat)}–${formatMinutesAsTime(endMins, timeFormat)}`;
 
   const RESIZE_H = 8;
-  // Tiers based on full event height (1px = 1min)
-  const showTimeRange = heightPx >= 44;          // 45 min+
-  const tinyCheckbox  = heightPx <= 20;          // clamped 15-min events only
-  const topAlign      = heightPx >= 40;          // 45 min and 1hr → top; 15/30 min → center
 
   function handleResizePointerDown(e: React.PointerEvent) {
     e.stopPropagation();
@@ -290,9 +286,8 @@ function EventBlock({
       {...attributes}
       style={style}
       className={cn(
-        // Outer div IS the flex row — alignment uses full heightPx, not a cropped bodyH
         "group relative flex gap-1 px-1.5 cursor-grab select-none touch-none rounded-md border overflow-hidden active:cursor-grabbing",
-        topAlign ? "items-start pt-1" : "items-center",
+        heightPx > 36 ? "items-start pt-1.5" : "items-center",
         assignment.completed
           ? "border-success/20 bg-success/[0.08]"
           : "border-brand/20 bg-brand/[0.07]",
@@ -302,26 +297,24 @@ function EventBlock({
       <Checkbox
         checked={assignment.completed}
         onChange={() => onToggle(assignment.id)}
-        size={tinyCheckbox ? "xs" : "sm"}
-        className={tinyCheckbox ? undefined : "h-3.5 w-3.5"}
+        size="xs"
         uncheckedClassName="bg-white/80"
       />
 
-      {/* Text column */}
-      <div className="min-w-0 flex-1">
+      {/* Title + time on one row, always */}
+      <div className="min-w-0 flex flex-1 items-center gap-1.5 overflow-hidden">
         <EditableGoalTitle
           title={goal.title}
           onRename={isPrebuiltGoal(goal.id) ? undefined : (nextTitle) => onRenameGoal(goal.id, nextTitle)}
           className={cn(
-            "font-semibold leading-none",
-            tinyCheckbox ? "text-[10px]" : "text-[10.5px]",
+            "min-w-0 flex-1 truncate text-[10.5px] font-semibold leading-none",
             assignment.completed ? "text-slate-400 line-through decoration-slate-300" : "text-slate-800",
           )}
-          inputClassName={cn(tinyCheckbox ? "text-[10px] font-semibold" : "text-[10.5px] font-semibold")}
+          inputClassName="text-[10.5px] font-semibold"
         />
-        {showTimeRange && (
-          <p className="mt-[2px] text-[9px] leading-none text-slate-400 truncate">{timeRange}</p>
-        )}
+        <span className="shrink-0 text-[9px] tabular-nums leading-none text-slate-400">
+          {timeRange}
+        </span>
       </div>
 
       {/* Remove — hover only */}

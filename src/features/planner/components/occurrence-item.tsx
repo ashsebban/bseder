@@ -224,7 +224,7 @@ export function OccurrenceItem({
                 density === "compact" ? "text-[12.5px]" : "text-[13.5px]",
               )}
             />
-            {backlogEntries.length > 0 && (
+            {backlogEntries.length > 0 && density !== "compact" && (
               <DailyBacklogBadge
                 goalTitle={goal.title}
                 entries={backlogEntries}

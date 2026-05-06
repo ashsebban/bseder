@@ -44,13 +44,13 @@ export function getGoalItemStatus({
 }
 
 export function goalStatusRowClass(status: GoalItemStatus): string {
-  if (status === "missed") return "border border-red-100/80 bg-red-50/25 hover:bg-red-50/45";
-  if (status === "due-soon") return "border border-amber-100 bg-amber-50/35 hover:bg-amber-50/55";
-  if (status === "not-yet") return "opacity-55 hover:bg-slate-50";
-  if (status === "completed-late") return "border border-amber-100 bg-amber-50/25";
-  if (status === "completed") return "bg-emerald-50/35 hover:bg-emerald-50/55";
-  if (status === "backlog") return "border border-blue-100 bg-blue-50/45 hover:bg-blue-50/65";
-  if (status === "behind-pace") return "border border-amber-100 bg-slate-50/80 hover:bg-amber-50/35";
+  if (status === "missed") return "border border-rose-100/70 bg-rose-50/20 hover:bg-rose-50/35";
+  if (status === "due-soon") return "border border-amber-100/80 bg-amber-50/25 hover:bg-amber-50/45";
+  if (status === "not-yet") return "opacity-50 hover:opacity-70";
+  if (status === "completed-late") return "bg-emerald-50/20 hover:bg-emerald-50/35";
+  if (status === "completed") return "bg-emerald-50/30 hover:bg-emerald-50/50";
+  if (status === "backlog") return "border border-indigo-100/80 bg-indigo-50/30 hover:bg-indigo-50/50";
+  if (status === "behind-pace") return "border border-amber-100/70 bg-amber-50/20 hover:bg-amber-50/35";
   return "hover:bg-slate-50";
 }
 
@@ -64,19 +64,18 @@ export function goalStatusTitleClass(status: GoalItemStatus): string {
 }
 
 export function goalStatusSubtitleClass(status: GoalItemStatus): string {
-  if (status === "missed") return "font-semibold text-red-500";
-  if (status === "due-soon" || status === "completed-late" || status === "behind-pace") {
-    return "font-semibold text-amber-500";
-  }
-  if (status === "backlog") return "font-semibold text-blue-600";
+  if (status === "missed") return "text-rose-400";
+  if (status === "due-soon" || status === "behind-pace") return "text-amber-500";
+  if (status === "completed-late") return "text-slate-400";
+  if (status === "backlog") return "text-indigo-500";
   return "text-slate-400";
 }
 
 export function goalStatusCheckboxClass(status: GoalItemStatus, checked: boolean): string | undefined {
   if (checked) return undefined;
-  if (status === "missed") return "border-red-200 bg-red-50 hover:border-red-300";
-  if (status === "due-soon") return "border-amber-200 bg-amber-50 hover:border-amber-300";
-  if (status === "not-yet") return "border-slate-200 bg-slate-50";
+  if (status === "missed") return "border-rose-200 bg-rose-50/50 hover:border-rose-300";
+  if (status === "due-soon") return "border-amber-200 bg-amber-50/50 hover:border-amber-300";
+  if (status === "not-yet") return "border-slate-200/70 bg-transparent";
   return undefined;
 }
 
@@ -93,11 +92,12 @@ export function GoalStatusPill({
   return (
     <span
       className={cn(
-        "shrink-0 rounded-full px-2 py-[2px] text-[9.5px] font-bold",
-        status === "missed" && "bg-red-50 text-red-600",
-        (status === "due-soon" || status === "completed-late" || status === "behind-pace") && "bg-amber-50 text-amber-700",
-        status === "not-yet" && "bg-slate-100 text-slate-500",
-        status === "backlog" && "bg-blue-50 text-blue-700",
+        "shrink-0 rounded-full px-2 py-[2px] text-[9.5px] font-semibold tracking-wide",
+        status === "missed" && "bg-rose-50 text-rose-500",
+        (status === "due-soon" || status === "behind-pace") && "bg-amber-50 text-amber-500",
+        status === "completed-late" && "bg-slate-100/80 text-slate-400",
+        status === "not-yet" && "bg-slate-50 text-slate-400",
+        status === "backlog" && "bg-indigo-50 text-indigo-500",
         className,
       )}
     >

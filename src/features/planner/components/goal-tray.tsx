@@ -574,6 +574,7 @@ export function DrawerGoalTray({
   view,
   weekStartsOn = 0,
   onRenameGoal,
+  onToggleDate,
 }: {
   goals: Goal[];
   dayAssignments: DayAssignment[];
@@ -581,6 +582,7 @@ export function DrawerGoalTray({
   view: TrayView;
   weekStartsOn?: 0 | 1;
   onRenameGoal: (goalId: string, nextTitle: string) => void;
+  onToggleDate?: (goalId: string, isoDate: string) => void;
 }) {
   const [activeFilter, setActiveFilter] = useState<DrawerFilter>("all");
   const selectedIso = toIsoDate(selectedDate);
@@ -628,6 +630,7 @@ export function DrawerGoalTray({
         onRenameGoal={onRenameGoal}
         programLabel={getGoalProgramLabel(g, selectedDate)}
         dailyBacklogCount={c.dailyBacklogCount}
+        onResolveBacklogDate={onToggleDate ? (isoDate) => onToggleDate(g.id, isoDate) : undefined}
       />
     );
   }
