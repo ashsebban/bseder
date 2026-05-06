@@ -26,6 +26,7 @@ import { CompletionBanner, CompletionCount } from "@/features/planner/components
 import { InlineAddTask, TaskListEmptyState } from "@/features/planner/components/inline-add-task";
 import { getDailyBacklogEntries, type DailyBacklogEntry } from "@/features/goals/lib/daily-backlog";
 import { OccurrenceItem } from "@/features/planner/components/occurrence-item";
+import { DayScratchpad } from "@/features/calendar/components/day-scratchpad";
 
 interface DayFocusProps {
   date: Date;
@@ -937,7 +938,7 @@ export function DayFocus({
   );
 
   return (
-    <div className="grid grid-cols-[1fr_1.5fr] gap-4">
+    <div className="grid grid-cols-[1fr_0.8fr_0.8fr] gap-4">
       <DayTimeline
         assignments={assignedItems.map((i) => i.assignment)}
         goals={goals}
@@ -972,6 +973,7 @@ export function DayFocus({
         backlogEntriesByGoal={backlogEntriesByGoal}
         missedBehavior={missedBehavior}
       />
+      <DayScratchpad isoDate={isoDate} className="h-full" />
     </div>
   );
 }
