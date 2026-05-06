@@ -4,7 +4,7 @@ import { RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import type { CalendarPreferences, CalendarTimeFormat } from "@/features/settings/types/calendar-preferences";
+import type { CalendarPreferences, CalendarTimeFormat, MissedBehavior } from "@/features/settings/types/calendar-preferences";
 import type { CalendarView } from "@/features/calendar/types/calendar";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
@@ -140,6 +140,18 @@ export function CalendarPreferencesEditor({
         checked={preferences.showRoshChodesh}
         onCheckedChange={(value) => onPreferenceChange("showRoshChodesh", value)}
       />
+
+      <SectionLabel>Tasks</SectionLabel>
+      <SelectRow label="Missed behavior" widthClassName={widthClassName}>
+        <Select
+          className="h-8 w-full rounded-lg px-3 pr-8 text-[12.5px]"
+          value={preferences.missedBehavior}
+          onChange={(event) => onPreferenceChange("missedBehavior", event.target.value as MissedBehavior)}
+        >
+          <option value="punish">Punish (show Missed)</option>
+          <option value="forgive">Forgive (hide Missed)</option>
+        </Select>
+      </SelectRow>
 
       <SectionLabel>Holidays</SectionLabel>
       <ToggleRow

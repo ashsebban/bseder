@@ -22,7 +22,7 @@ import {
   sortGoalOccurrences,
   type GoalOccurrence,
 } from "@/features/calendar/lib/goal-occurrences";
-import { getGoalTimePlacementForTime, MAARIV_GOAL_ID } from "@/features/calendar/lib/goal-time-window";
+import { getGoalTimePlacementForTime, getGoalTimeWindowBands, MAARIV_GOAL_ID, type GoalTimeWindowBand } from "@/features/calendar/lib/goal-time-window";
 import { getGoalOccurrenceDateForPlannerDate } from "@/features/calendar/lib/goal-day";
 import { useSyncedCalendarPreferences } from "@/features/settings/hooks/use-synced-calendar-preferences";
 import {
@@ -86,6 +86,7 @@ function getGoalIdFromDragId(dragId: string): string | null {
 function getAssignmentIdFromDragId(dragId: string): string | null {
   if (dragId.startsWith("assignment:")) return dragId.slice("assignment:".length);
   if (dragId.startsWith("checklist-collapsed:")) return dragId.slice("checklist-collapsed:".length);
+  if (dragId.startsWith("timeline:")) return dragId.slice("timeline:".length);
   return null;
 }
 
@@ -509,6 +510,16 @@ export function CalendarWorkspace({
     setActiveGoalId(event.active.id as string);
   }, []);
 
+  const activeDragWindowBands = useMemo((): GoalTimeWindowBand[] => {
+    if (!activeGoalId || calendar.view !== "day") return [];
+    const assignmentId = getAssignmentIdFromDragId(activeGoalId);
+    const assignment = assignmentId ? plannerDayAssignments.find((a) => a.id === assignmentId) : null;
+    const goalId = assignment?.goalId ?? getGoalIdFromDragId(activeGoalId);
+    const goal = goalId ? goals.find((g) => g.id === goalId) : null;
+    if (!goal) return [];
+    return getGoalTimeWindowBands(goal, dayZmanim ?? undefined);
+  }, [activeGoalId, goals, plannerDayAssignments, dayZmanim, calendar.view]);
+
   const handleDragEnd = useCallback((event: DragEndEvent) => {
     setActiveGoalId(null);
     const activeId = event.active.id as string;
@@ -540,6 +551,9 @@ export function CalendarWorkspace({
         const assignment = plannerDayAssignments.find((a) => a.id === assignmentId);
         const goal = assignment ? goals.find((g) => g.id === assignment.goalId) : undefined;
         if (goal && !applyPlacementCaveat(goal)) return;
+        // Generated assignments are synced into dayAssignments via the useLayoutEffect equality
+        // check — setScheduledTime finds them there. Calling assignWithTime instead triggers a
+        // false-duplicate rejection in assign() that silently drops the drop.
         setScheduledTime(assignmentId, timeStr);
       } else if (activeId.startsWith("daily:")) {
         // Checklist goal dragged to timeline → create a scheduled assignment.
@@ -657,7 +671,7 @@ export function CalendarWorkspace({
     } else {
       assign(goalId, isoDate, undefined, periodKey);
     }
-  }, [goals, plannerDayAssignments, preferences, dayZmanim, assign, assignAlreadyCompleted, moveAssignment, setScheduledTime, openAssignmentModal, openCapBlockedModal, syncTimeCaveatFollowup, calendar.selectedDate]);
+  }, [goals, plannerDayAssignments, preferences, dayZmanim, assign, assignWithTime, assignAlreadyCompleted, moveAssignment, setScheduledTime, openAssignmentModal, openCapBlockedModal, syncTimeCaveatFollowup, calendar.selectedDate]);
 
   const title = getViewTitle(calendar.view, calendar.selectedDate, calendar.selectedDate, preferences.weekStartsOn);
   const month = buildMonthView(calendar.selectedDate, calendar.selectedDate, today, metadataByDate, preferences.weekStartsOn);
@@ -783,6 +797,7 @@ export function CalendarWorkspace({
                   todayZmanim={todayZmanim ?? undefined}
                   onDoubleClickDate={(d) => { calendar.setDateAndView(d, "day"); }}
                   onRenameGoal={renameGoal}
+                  missedBehavior={preferences.missedBehavior}
                 />
               ) : null}
               {calendar.view === "day" ? (
@@ -807,6 +822,8 @@ export function CalendarWorkspace({
                   goalOrder={goalOrder}
                   onReorderGoals={reorderGoals}
                   onRenameGoal={renameGoal}
+                  missedBehavior={preferences.missedBehavior}
+                  activeDragWindowBands={activeDragWindowBands}
                 />
               ) : null}
             </div>

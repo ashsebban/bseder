@@ -41,6 +41,7 @@ interface WeekGridProps {
   todayZmanim?: DayZmanim;
   onDoubleClickDate: (date: Date) => void;
   onRenameGoal: (goalId: string, nextTitle: string) => void;
+  missedBehavior?: "punish" | "forgive";
 }
 
 const WEEKDAY_LABELS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
@@ -173,6 +174,7 @@ function SortableWeekGoalItem({
   zmanim,
   onRenameGoal,
   backlogEntriesByGoal,
+  missedBehavior,
 }: {
   item: GoalOccurrence;
   isoDate: string;
@@ -185,6 +187,7 @@ function SortableWeekGoalItem({
   zmanim?: DayZmanim;
   onRenameGoal: (goalId: string, nextTitle: string) => void;
   backlogEntriesByGoal: Map<string, DailyBacklogEntry[]>;
+  missedBehavior?: "punish" | "forgive";
 }) {
   if (item.source === "auto" && item.autoKind === "weekly") {
     return (
@@ -215,9 +218,10 @@ function SortableWeekGoalItem({
       onRenameGoal={onRenameGoal}
       backlogEntries={backlogEntriesByGoal.get(item.goal.id) ?? []}
       onResolveBacklogDate={(goalId, date) => onToggleDate(goalId, date)}
-      enableDrag={item.source === "assignment"}
+      enableDrag={item.source === "assignment" && !item.goal.lockInDays}
       allIds={allIds}
       onReorderGoals={onReorderGoals}
+      missedBehavior={missedBehavior}
     />
   );
 }
@@ -236,6 +240,7 @@ function DayColumn({
   onDoubleClickDate,
   onRenameGoal,
   backlogEntriesByGoal,
+  missedBehavior,
 }: {
   day: CalendarDay;
   goals: Goal[];
@@ -250,6 +255,7 @@ function DayColumn({
   onDoubleClickDate: (date: Date) => void;
   onRenameGoal: (goalId: string, nextTitle: string) => void;
   backlogEntriesByGoal: Map<string, DailyBacklogEntry[]>;
+  missedBehavior?: "punish" | "forgive";
 }) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
@@ -261,12 +267,7 @@ function DayColumn({
   >(null);
   const { setNodeRef, isOver } = useDroppable({ id: day.iso });
 
-  const [activeDragId, setActiveDragId] = useState<string | null>(null);
-  useDndMonitor({
-    onDragStart: (event) => setActiveDragId(event.active.id as string),
-    onDragEnd: () => setActiveDragId(null),
-    onDragCancel: () => setActiveDragId(null),
-  });
+  useDndMonitor({});
 
   const meta = day.metadata;
   const isoDate = day.iso;
@@ -310,7 +311,6 @@ function DayColumn({
   const completedCount = mounted
     ? occurrences.filter((occurrence) => occurrence.completed).length
     : 0;
-  const allDone = totalCount > 0 && completedCount === totalCount;
 
   return (
     <div
@@ -381,6 +381,7 @@ function DayColumn({
             zmanim={zmanim}
             onRenameGoal={onRenameGoal}
             backlogEntriesByGoal={backlogEntriesByGoal}
+            missedBehavior={missedBehavior}
           />
         ))}
 
@@ -442,6 +443,7 @@ export function WeekGrid({
   todayZmanim,
   onDoubleClickDate,
   onRenameGoal,
+  missedBehavior,
 }: WeekGridProps) {
   const backlogToday = todayIso();
   const backlogEntriesByGoal = useMemo(
@@ -478,6 +480,7 @@ export function WeekGrid({
               onDoubleClickDate={onDoubleClickDate}
               onRenameGoal={onRenameGoal}
               backlogEntriesByGoal={backlogEntriesByGoal}
+              missedBehavior={missedBehavior}
             />
           );
         })}

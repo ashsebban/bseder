@@ -17,6 +17,7 @@ import {
   GoalStatusPill,
 } from "@/features/goals/components/goal-item-status";
 import { getGoalTimeStateForNow, computeGoalCountdown } from "@/features/calendar/lib/goal-time-window";
+import { todayIso } from "@/lib/date";
 import { formatClockTime } from "@/features/calendar/lib/time-format";
 import { isPrebuiltGoal } from "@/features/goals/lib/prebuilt-goals";
 import type { GoalOccurrence } from "@/features/calendar/lib/goal-occurrences";
@@ -40,6 +41,8 @@ export type OccurrenceItemProps = {
   /** Goal IDs for the vertical reorder grip. Omit to hide the grip. */
   allIds?: string[];
   onReorderGoals?: (prevIds: string[], nextIds: string[]) => void;
+  /** Whether to show "Missed" for past-day incomplete items. Adhoc tasks always forgive. Default "punish". */
+  missedBehavior?: "punish" | "forgive";
 };
 
 /**
@@ -72,6 +75,7 @@ export function OccurrenceItem({
   enableDrag = false,
   allIds,
   onReorderGoals,
+  missedBehavior = "punish",
 }: OccurrenceItemProps) {
   const [isSortDragging, setIsSortDragging] = useState(false);
   const { goal } = item;
@@ -82,10 +86,11 @@ export function OccurrenceItem({
   const dragId = item.source === "assignment"
     ? (item.collapsed ? item.actionId : `assignment:${item.assignment.id}`)
     : `daily:${goal.id}`;
+  // lockInDays = "can't be moved to another day" — that restriction is enforced in handleDragEnd
+  // for cross-day drops. Same-day timeline assignment (checklist → timeline) should work for
+  // locked goals too. Callers that don't want cross-day drag pass enableDrag=false.
   const draggable = enableDrag
-    && item.source === "assignment"
-    && !goal.lockInDays
-    && item.assignment.disabled !== true;
+    && (item.source === "auto" || item.assignment.disabled !== true);
   const { attributes, listeners, setNodeRef, isDragging, transform } = useDraggable({
     id: dragId,
     disabled: !draggable,
@@ -96,13 +101,37 @@ export function OccurrenceItem({
   const activeDrag = isDragging || isSortDragging;
 
   // ── Status: single source of truth for all visual treatment ──────────────
+  // Adhoc tasks (quick todos) are always forgiven — they're not obligations.
+  const isPast = !isToday && item.occurrenceDate < todayIso() && missedBehavior !== "forgive" && !goal.adhoc;
+
+  // completedAfterWindow: use stored flag when explicitly set (true or false).
+  // When undefined (generated assignments, auto items), infer:
+  //   Past day + time window + no placed scheduledTime → retroactive = Late.
+  //   Today + time window + completedAt after window → Late.
+  const storedAfterWindow = item.source === "assignment" ? item.assignment.completedAfterWindow : undefined;
+  const inferredAfterWindow = storedAfterWindow === undefined && item.completed && !!goal.expiresAt && (() => {
+    if (!isToday && item.occurrenceDate < todayIso()) {
+      // Past day: late unless a user-placed scheduledTime proves it was within the window
+      if (item.source === "assignment" && item.assignment.scheduledTime) return false;
+      return true;
+    }
+    if (isToday && item.source === "assignment" && item.assignment.completedAt && zmanim) {
+      // Today: evaluate completedAt against this day's window
+      const fakeNow = new Date(`${item.occurrenceDate}T${item.assignment.completedAt}:00`);
+      return getGoalTimeStateForNow(goal, zmanim, true, fakeNow) === "expired";
+    }
+    return false;
+  })();
+  const completedAfterWindow = storedAfterWindow === true || inferredAfterWindow;
+
   const timeState = getGoalTimeStateForNow(goal, zmanim, isToday, now);
   const countdown = isToday ? computeGoalCountdown(goal, zmanim, now, item.completed) : null;
   const status = getGoalItemStatus({
     completed: item.completed,
-    completedAfterWindow: item.source === "assignment" ? item.assignment.completedAfterWindow : false,
+    completedAfterWindow,
     timeState,
     countdownUrgent: countdown?.urgent,
+    isPast,
   });
 
   // ── Subtitle: unified metadata line ──────────────────────────────────────
@@ -119,11 +148,9 @@ export function OccurrenceItem({
   const amountLabel = goal.type === "quantified" && item.displayAmount > 0
     ? `${item.displayAmount}${goal.targetUnit ? ` ${goal.targetUnit}` : ""}`
     : null;
-  const stateLabel = countdown
-    ? countdown.label
-    : timeState === "expired" ? "expired"
-    : timeState === "not-yet" ? "not yet"
-    : null;
+  // Only show countdown text when it adds time-specific info ("starts in X", "ends in X").
+  // "expired" / "not yet" / "done before deadline" are already communicated by the status pill.
+  const stateLabel = countdown?.label?.includes(" in ") ? countdown.label : null;
   const subtitle = [item.programLabel, cadenceHint, amountLabel, stateLabel]
     .filter(Boolean)
     .join(" · ");
@@ -228,19 +255,20 @@ export function OccurrenceItem({
               {timeLabel}
             </span>
           ) : null}
-          {onRemove && !goal.lockInDays ? (
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onRemove(); }}
-              onPointerDown={(e) => e.stopPropagation()}
-              className="rounded-full p-0.5 text-slate-300 opacity-0 transition hover:text-red-400 group-hover:opacity-100"
-            >
-              <X
-                className={cn(density === "compact" ? "h-2.5 w-2.5" : "h-3 w-3")}
-                strokeWidth={2.5}
-              />
-            </button>
-          ) : null}
+          {/* Always rendered to keep trailing width uniform across all items in a list */}
+          <button
+            type="button"
+            onClick={(e) => { if (onRemove && !goal.lockInDays) { e.stopPropagation(); onRemove(); } }}
+            onPointerDown={(e) => e.stopPropagation()}
+            className={cn(
+              "rounded-full p-0.5 transition",
+              onRemove && !goal.lockInDays
+                ? "text-slate-300 opacity-0 hover:text-red-400 group-hover:opacity-100"
+                : "invisible pointer-events-none",
+            )}
+          >
+            <X className={cn(density === "compact" ? "h-2.5 w-2.5" : "h-3 w-3")} strokeWidth={2.5} />
+          </button>
         </div>
       )}
     />

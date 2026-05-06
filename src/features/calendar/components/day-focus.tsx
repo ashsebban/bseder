@@ -13,12 +13,12 @@ import {
   sortGoalOccurrences,
   type GoalOccurrence,
 } from "@/features/calendar/lib/goal-occurrences";
-import { GoalListRow, EditableGoalTitle } from "@/features/calendar/components/goal-list-row";
+import { EditableGoalTitle } from "@/features/calendar/components/goal-list-row";
 import { Checkbox } from "@/components/ui/checkbox";
 import { isPrebuiltGoal } from "@/features/goals/lib/prebuilt-goals";
 import type { DayZmanim } from "@/features/calendar/lib/zmanim";
 import { getHourZmanInfo, formatZmanTime } from "@/features/calendar/lib/zmanim";
-import { getGoalTimeStateForNow } from "@/features/calendar/lib/goal-time-window";
+import { getGoalTimeStateForNow, type GoalTimeWindowBand } from "@/features/calendar/lib/goal-time-window";
 import { formatHourLabel, formatMinutesAsTime, formatClockTime, parseHHMM } from "@/features/calendar/lib/time-format";
 import type { CalendarTimeFormat } from "@/features/settings/types/calendar-preferences";
 import { CalendarMetaPills, buildCalendarMetaPills } from "@/features/planner/components/calendar-meta-pills";
@@ -48,6 +48,8 @@ interface DayFocusProps {
   onSetDuration: (assignmentId: string, durationMins: number) => void;
   goalOrder?: string[];
   onReorderGoals?: (prevIds: string[], newIds: string[]) => void;
+  missedBehavior?: "punish" | "forgive";
+  activeDragWindowBands?: GoalTimeWindowBand[];
 }
 
 // ─── Timeline constants ───────────────────────────────────────────────────────
@@ -358,6 +360,7 @@ function DayTimeline({
   snapMins,
   defaultDurationMins,
   onPreferenceChange,
+  activeDragWindowBands,
 }: {
   assignments: DayAssignment[];
   goals: Goal[];
@@ -371,6 +374,7 @@ function DayTimeline({
   snapMins: number;
   defaultDurationMins: number;
   onPreferenceChange: (key: "timelineSnapMins" | "timelineDefaultDurationMins", value: number) => void;
+  activeDragWindowBands?: GoalTimeWindowBand[];
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isToday = isoDate === todayIso();
@@ -554,6 +558,35 @@ function DayTimeline({
             <DropSlot key={i} minutesFromStart={i * snapMins} snapMins={snapMins} />
           ))}
 
+          {/* Time window bands — shown while dragging to indicate valid placement zones */}
+          {activeDragWindowBands?.flatMap((band, bi) => {
+            if (band.startHour === null) return [];
+            const wraps = band.endHour !== null && band.endHour < band.startHour;
+            // For overnight windows (e.g. Maariv 8pm–4am) only show the evening segment.
+            // The early-morning carryover (12am–4am) belongs conceptually to the previous
+            // night and showing it alongside the evening band looks like two separate prayers.
+            const segments = wraps
+              ? [{ start: band.startHour, end: TIMELINE_START_HOUR + TIMELINE_TOTAL_HOURS }]
+              : [{ start: band.startHour, end: band.endHour ?? (TIMELINE_START_HOUR + TIMELINE_TOTAL_HOURS) }];
+            return segments.map((seg, si) => (
+              <div
+                key={`band-${bi}-${si}`}
+                className={cn(
+                  "absolute pointer-events-none z-[1]",
+                  band.kind === "ideal"
+                    ? "bg-emerald-400/10 border-l-[3px] border-emerald-400/40"
+                    : "bg-amber-400/10 border-l-[3px] border-amber-400/40",
+                )}
+                style={{
+                  left: LEFT_GUTTER,
+                  right: 0,
+                  top: (seg.start - TIMELINE_START_HOUR) * PX_PER_HOUR,
+                  height: Math.max(0, (seg.end - seg.start) * PX_PER_HOUR),
+                }}
+              />
+            ));
+          })}
+
           {/* Event blocks — inside a gutter-offset container so % widths don't include the gutter */}
           <div className="absolute top-0 bottom-0" style={{ left: LEFT_GUTTER, right: 0 }}>
             {scheduledAssignments.map(({ assignment }) => {
@@ -671,6 +704,7 @@ function DayChecklist({
   onReorderGoals,
   zmanim,
   backlogEntriesByGoal,
+  missedBehavior,
 }: {
   date: Date;
   relativeLabel: string;
@@ -688,6 +722,7 @@ function DayChecklist({
   onReorderGoals?: (prev: string[], next: string[]) => void;
   zmanim?: DayZmanim;
   backlogEntriesByGoal: Map<string, DailyBacklogEntry[]>;
+  missedBehavior?: "punish" | "forgive";
 }) {
   const [now, setNow] = useState(() => new Date());
   const [showCompleted, setShowCompleted] = useState(true);
@@ -740,6 +775,7 @@ function DayChecklist({
       enableDrag
       allIds={itemIds}
       onReorderGoals={onReorderGoals ?? (() => {})}
+      missedBehavior={missedBehavior}
     />
   );
 
@@ -883,6 +919,8 @@ export function DayFocus({
   onSetDuration,
   goalOrder = [],
   onReorderGoals,
+  missedBehavior,
+  activeDragWindowBands,
 }: DayFocusProps) {
   const isoDate = toIsoDate(date);
   const isToday = isoDate === todayIso();
@@ -920,6 +958,7 @@ export function DayFocus({
         snapMins={timelineSnapMins}
         defaultDurationMins={timelineDefaultDurationMins}
         onPreferenceChange={onTimelinePreferenceChange}
+        activeDragWindowBands={activeDragWindowBands}
       />
       <DayChecklist
         date={date}
@@ -938,6 +977,7 @@ export function DayFocus({
         onReorderGoals={onReorderGoals}
         zmanim={zmanim}
         backlogEntriesByGoal={backlogEntriesByGoal}
+        missedBehavior={missedBehavior}
       />
     </div>
   );

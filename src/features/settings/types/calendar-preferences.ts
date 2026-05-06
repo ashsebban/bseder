@@ -1,4 +1,5 @@
 export type CalendarTimeFormat = "12h" | "24h";
+export type MissedBehavior = "punish" | "forgive";
 export type HavdalahOpinion = "tzeit-8_5" | "42" | "50" | "72";
 export type Nusach = "ashkenaz" | "sfard" | "sephardi" | "temanim" | "chabad" | "custom";
 export type HavdalahMode = "nusach" | "custom";
@@ -37,4 +38,6 @@ export interface CalendarPreferences {
   showHebrewDatesOnGoals: boolean;
   hebrewDateFormat: HebrewDateFormat;
   hebrewDateIncludeYear: boolean;
+  // Tasks
+  missedBehavior: MissedBehavior;
 }

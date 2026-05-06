@@ -40,6 +40,7 @@ export const defaultCalendarPreferences: CalendarPreferences = {
   showHebrewDatesOnGoals: false,
   hebrewDateFormat: "english",
   hebrewDateIncludeYear: false,
+  missedBehavior: "punish",
 };
 
 export function getHavdalahOptions(opinion: HavdalahOpinion) {

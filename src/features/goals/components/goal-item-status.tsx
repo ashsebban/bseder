@@ -27,13 +27,16 @@ export function getGoalItemStatus({
   completedAfterWindow,
   timeState,
   countdownUrgent,
+  isPast,
 }: {
   completed: boolean;
   completedAfterWindow?: boolean;
   timeState: GoalTimeState;
   countdownUrgent?: boolean;
+  isPast?: boolean;
 }): GoalItemStatus {
   if (completed) return completedAfterWindow ? "completed-late" : "completed";
+  if (isPast) return "missed";
   if (timeState === "expired") return "missed";
   if (timeState === "not-yet") return "not-yet";
   if (countdownUrgent) return "due-soon";

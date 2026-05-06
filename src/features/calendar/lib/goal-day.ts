@@ -90,6 +90,13 @@ export function getGoalOccurrenceDateForPlannerDate(
 
   if (!plannerDateObject || getGoalDayModel(goal) !== "jewish") return plannerIso;
 
+  // Maariv uses Gregorian planner-date identity, not Hebrew-day identity.
+  // "July 23's Maariv" means the evening prayer on July 23 regardless of whether it's
+  // placed at 8pm (before midnight) or 2am (after midnight but still that night).
+  // Without this, placing Maariv at 8pm shifts occurrenceDate → July 24, which causes
+  // materializePlannerWeekAssignments to generate a duplicate Maariv for July 24.
+  if (goal.id === MAARIV_GOAL_ID) return plannerIso;
+
   let fraction: number | null = null;
   if (options.scheduledTime) {
     fraction = parseHHMMFraction(options.scheduledTime);

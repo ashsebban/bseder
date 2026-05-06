@@ -646,6 +646,7 @@ export function TodaysFocusWidget({ storageScope }: { storageScope: string }) {
                   now={now}
                   zmanim={todayZmanim ?? undefined}
                   timeFormat={preferences.timeFormat}
+                  missedBehavior={preferences.missedBehavior}
                   onToggle={() => toggleOccurrence(item)}
                 />
               ))}
@@ -663,6 +664,7 @@ export function TodaysFocusWidget({ storageScope }: { storageScope: string }) {
                   now={now}
                   zmanim={todayZmanim ?? undefined}
                   timeFormat={preferences.timeFormat}
+                  missedBehavior={preferences.missedBehavior}
                   onToggle={() => toggleOccurrence(item)}
                 />
               ))}

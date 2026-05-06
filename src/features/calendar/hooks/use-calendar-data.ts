@@ -33,7 +33,7 @@ import {
 import { toggleGoalDate, updateParentProgress } from "@/features/goals/lib/goal-mutations";
 import { computeDayZmanim } from "@/features/calendar/lib/zmanim";
 import { resolveLocation } from "@/features/calendar/lib/locations";
-import { getGoalTimePlacementForTime, MAARIV_GOAL_ID, type GoalTimeCaveat } from "@/features/calendar/lib/goal-time-window";
+import { getGoalTimePlacementForTime, getGoalTimeStateForNow, MAARIV_GOAL_ID, type GoalTimeCaveat } from "@/features/calendar/lib/goal-time-window";
 import {
   getAssignmentOccurrenceDate,
   getGoalOccurrenceDateForPlannerDate,
@@ -752,6 +752,22 @@ export function useCalendarData({
       });
     }
 
+    const isPastDay = assignment.date < toIsoDate(new Date());
+
+    const completedAfterWindow = (() => {
+      if (!nowCompleted || !goal?.expiresAt) return false;
+      if (isPastDay) {
+        // Past day with an existing placed time: evaluate that time against that day's window.
+        // No placed time: retroactive — we can't confirm timing, so mark Late.
+        if (!assignment.scheduledTime) return true;
+        const fakeNow = new Date(`${assignment.date}T${assignment.scheduledTime}:00`);
+        const zmanim = getZmanimForDate(assignment.date, preferences);
+        return getGoalTimeStateForNow(goal, zmanim ?? undefined, true, fakeNow) === "expired";
+      }
+      const zmanim = getZmanimForDate(assignment.date, preferences);
+      return getGoalTimeStateForNow(goal, zmanim ?? undefined, true, new Date()) === "expired";
+    })();
+
     setDayAssignments((prev) => {
       if (isReopeningCollapsedGroup) {
         const updated = reopenCollapsedSessionGroupAsSingleAssignment(prev, id);
@@ -760,9 +776,11 @@ export function useCalendarData({
       }
       const updated = prev.map((a) => {
         if (!assignmentIdsToToggle.has(a.id)) return a;
-        if (!nowCompleted) return { ...a, completed: false, completedAt: undefined };
-        const completionTime = a.scheduledTime ?? timeStr;
-        return { ...a, completed: true, scheduledTime: completionTime, completedAt: completionTime };
+        if (!nowCompleted) return { ...a, completed: false, completedAt: undefined, completedAfterWindow: undefined };
+        // Preserve existing scheduledTime only if the user explicitly placed it on the timeline.
+        // Checkbox completion records completedAt but does not auto-schedule the item.
+        const completedAt = isPastDay ? a.completedAt : timeStr;
+        return { ...a, completed: true, completedAt, completedAfterWindow: completedAfterWindow || undefined };
       });
       persistDayAssignments(updated);
       return updated;
@@ -787,12 +805,21 @@ export function useCalendarData({
               zmanim: getZmanimForDate(a.date, preferences),
             })
           : getAssignmentOccurrenceDate(a);
+        // When placing a completed item at a specific time, recompute completedAfterWindow
+        // against that time and that day's zmanim — so dragging to 8am clears Late.
+        const newCompletedAfterWindow = (() => {
+          if (!a.completed || !time || !goal?.expiresAt) return a.completedAfterWindow;
+          const fakeNow = new Date(`${a.date}T${time}:00`);
+          const zmanim = getZmanimForDate(a.date, preferences) ?? undefined;
+          return getGoalTimeStateForNow(goal, zmanim, true, fakeNow) === "expired" ? true : undefined;
+        })();
         return {
           ...a,
           occurrenceDate: occurrenceDate === a.date ? undefined : occurrenceDate,
           periodKey: goal ? computePeriodKey(goal.cadence, new Date(`${occurrenceDate}T00:00:00`)) : a.periodKey,
           scheduledTime: time ?? undefined,
           completedAt: a.completed && time ? time : a.completedAt,
+          completedAfterWindow: newCompletedAfterWindow,
         };
       });
       persistDayAssignments(updated);
@@ -802,15 +829,20 @@ export function useCalendarData({
 
   const unscheduleAssignment = useCallback((assignmentId: string) => {
     setDayAssignments((prev) => {
-      const updated = prev.map((a) =>
-        a.id === assignmentId
-          ? { ...a, occurrenceDate: undefined, scheduledTime: undefined, durationMins: undefined }
-          : a,
-      );
+      const updated = prev.map((a) => {
+        if (a.id !== assignmentId) return a;
+        const goal = goals.find((g) => g.id === a.goalId);
+        // Completed past-day item with a window: removing the time means we can no longer
+        // confirm it was done within the window, so restore Late.
+        const completedAfterWindow = a.completed && goal?.expiresAt && a.date < toIsoDate(new Date())
+          ? true
+          : a.completedAfterWindow;
+        return { ...a, occurrenceDate: undefined, scheduledTime: undefined, durationMins: undefined, completedAfterWindow };
+      });
       persistDayAssignments(updated);
       return updated;
     });
-  }, [persistDayAssignments]);
+  }, [goals, persistDayAssignments]);
 
   const setDuration = useCallback((assignmentId: string, durationMins: number) => {
     setDayAssignments((prev) => {
@@ -873,6 +905,13 @@ export function useCalendarData({
       const periodKey = goal.cadence === "daily"
         ? undefined
         : computePeriodKey(goal.cadence, new Date(occurrenceDate + "T00:00:00"));
+      const isPastChecklist = plannerIso < toIsoDate(new Date());
+      const afterWindow = (() => {
+        if (!goal.expiresAt) return false;
+        if (isPastChecklist) return true; // retroactive — no time to evaluate
+        const zmanim = getZmanimForDate(plannerIso, preferences);
+        return getGoalTimeStateForNow(goal, zmanim ?? undefined, true, new Date()) === "expired";
+      })();
       setDayAssignments((prev) => {
         const isDuplicate = goal.type !== "quantified" && prev.some(
           (a) => (
@@ -892,14 +931,15 @@ export function useCalendarData({
               undefined,
               periodKey,
               undefined,
-              timeStr,
-              preferences.timelineDefaultDurationMins,
+              undefined,       // no scheduledTime — user didn't explicitly place on timeline
+              undefined,       // no durationMins
               undefined,
               undefined,
               occurrenceDate === plannerIso ? undefined : occurrenceDate,
             ),
             completed: true,
-            completedAt: timeStr,
+            completedAt: isPastChecklist ? undefined : timeStr,
+            completedAfterWindow: afterWindow || undefined,
           },
         ];
         persistDayAssignments(updated);

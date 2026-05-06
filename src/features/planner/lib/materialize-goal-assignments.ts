@@ -91,9 +91,88 @@ export function materializePlannerWeekAssignments(
     generatedAssignmentId(goal.id, isoDate);
   const getPrimaryOccurrenceDate = (goal: Goal, isoDate: string) =>
     getOccurrenceDateForPlannerSlot(goal, isoDate);
+  // Pre-pass: detect duplicate non-generated binary assignments for the same (goalId, date).
+  // These arise from an old bug where drag-to-timeline created a new assignment instead of
+  // updating the existing generated one. Keep the "best" one per slot; mark the rest for removal.
+  const bestNonGeneratedId = new Map<string, string>(); // "goalId:date" → id of assignment to keep
+  const redundantNonGeneratedIds = new Set<string>();
+  for (const a of existingAssignments) {
+    if (a.generated || a.skipped) continue;
+    const g = goalsById.get(a.goalId);
+    if (!g || g.type !== "binary") continue;
+    const key = `${a.goalId}:${a.date}`;
+    const keptId = bestNonGeneratedId.get(key);
+    if (!keptId) {
+      bestNonGeneratedId.set(key, a.id);
+    } else {
+      const kept = existingAssignments.find((x) => x.id === keptId)!;
+      const scoreOf = (x: typeof a) =>
+        (x.scheduledTime ? 8 : 0) + (x.completed ? 4 : 0) + (x.completedAt ? 2 : 0);
+      if (scoreOf(a) > scoreOf(kept)) {
+        redundantNonGeneratedIds.add(keptId);
+        bestNonGeneratedId.set(key, a.id);
+      } else {
+        redundantNonGeneratedIds.add(a.id);
+      }
+    }
+  }
+
   let changed = false;
   const normalizedAssignments = existingAssignments.flatMap((assignment) => {
-    if (!assignment.generated) return [assignment];
+    // Drop redundant duplicates identified above
+    if (redundantNonGeneratedIds.has(assignment.id)) {
+      changed = true;
+      return [];
+    }
+
+    if (!assignment.generated) {
+      // Correct stale occurrenceDate on non-generated assignments (e.g. Maariv stored with
+      // old shift behavior). Without this the generation loop produces a new entry with the
+      // same deterministic ID, causing duplicate-key React errors.
+      const ng = goalsById.get(assignment.goalId);
+      if (ng) {
+        const correct = getOccurrenceDateForPlannerSlot(
+          ng, assignment.date, assignment.scheduledTime ?? assignment.completedAt,
+        );
+        if (getAssignmentOccurrenceDate(assignment) !== correct) {
+          changed = true;
+          return [{
+            ...assignment,
+            occurrenceDate: correct === assignment.date ? undefined : correct,
+            periodKey: computePeriodKey(ng.cadence, new Date(`${correct}T00:00:00`)),
+          }];
+        }
+      }
+      return [assignment];
+    }
+
+    // Generated assignment — remove it if a non-generated already owns this (goalId, date).
+    // This covers both rule-owned and scheduled-generated (which has scheduledTime set and
+    // therefore passes isRuleOwnedGeneratedAssignment = false). Without this, both would
+    // appear in the output giving the same deterministic ID twice.
+    const genGoal = goalsById.get(assignment.goalId);
+    if (genGoal?.type === "binary" && bestNonGeneratedId.has(`${assignment.goalId}:${assignment.date}`)) {
+      changed = true;
+      return [];
+    }
+
+    // For generated-with-scheduledTime (not rule-owned): correct stale occurrenceDate so the
+    // existingOccurrenceKeys entry matches what the generation loop would compute, preventing
+    // a second entry with the same ID from being appended via the additions list.
+    if (genGoal && !isRuleOwnedGeneratedAssignment(assignment, { allowCompleted: true })) {
+      const correct = getOccurrenceDateForPlannerSlot(
+        genGoal, assignment.date, assignment.scheduledTime ?? assignment.completedAt,
+      );
+      if (getAssignmentOccurrenceDate(assignment) !== correct) {
+        changed = true;
+        return [{
+          ...assignment,
+          occurrenceDate: correct === assignment.date ? undefined : correct,
+          periodKey: computePeriodKey(genGoal.cadence, new Date(`${correct}T00:00:00`)),
+        }];
+      }
+    }
+
     const assignmentDate = new Date(`${assignment.date}T00:00:00`);
     const inWeek = assignmentDate >= weekStart && assignmentDate <= weekEnd;
     if (!inWeek || assignment.skipped) return [assignment];
@@ -189,5 +268,18 @@ export function materializePlannerWeekAssignments(
     }
   }
 
-  return changed ? [...normalizedAssignments, ...additions] : existingAssignments;
+  if (!changed) return existingAssignments;
+
+  // Deduplicate by assignment ID before returning. Stale occurrenceDates stored from older
+  // versions of the app can cause both a normalizedAssignment AND a new addition to share the
+  // same deterministic ID (e.g. "generated:__pack_maariv__:2026-05-06"), which crashes React
+  // with a duplicate-key error. When an ID appears twice we prefer the non-generated version
+  // (user data), or failing that the first occurrence.
+  const merged = [...normalizedAssignments, ...additions];
+  const seenIds = new Set<string>();
+  return merged.filter((a) => {
+    if (seenIds.has(a.id)) return false;
+    seenIds.add(a.id);
+    return true;
+  });
 }
