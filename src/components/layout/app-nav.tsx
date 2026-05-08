@@ -38,6 +38,7 @@ export function AppNav({ maxWidthClassName = "max-w-[1360px]" }: { maxWidthClass
   const navLinks = [
     { href: calendarHref, base: "/planner", label: "Calendar" },
     { href: "/goals", base: "/goals", label: "Goals" },
+    { href: "/shuls", base: "/shuls", label: "Shuls" },
     // Admin link — only rendered for admin users
     ...(session?.user?.isAdmin ? [{ href: "/admin", base: "/admin", label: "Admin" }] : []),
   ];

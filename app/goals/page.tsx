@@ -8,6 +8,7 @@ import { OnTrackWidget } from "@/features/goals/components/on-track-widget";
 import { ActiveStreaksWidget, BestStreakWidget } from "@/features/goals/components/streak-widgets";
 import { ThisWeekWidget } from "@/features/goals/components/this-week-widget";
 import { TodaysFocusWidget } from "@/features/goals/components/todays-focus-widget";
+import { EncouragementWidget } from "@/features/goals/components/encouragement-widget";
 import { getCurrentActiveUser } from "@/lib/current-active-user";
 
 function WidgetShell({ title, description, height = "h-36" }: { title: string; description: string; height?: string }) {
@@ -73,11 +74,7 @@ export default async function GoalsPage({ searchParams }: { searchParams: Promis
         </div>
 
         {/* Full-width encouragement / insights */}
-        <WidgetShell
-          title="Insights & Encouragement"
-          description="Weekly summary, personal bests, AI-generated chizuk based on your progress"
-          height="h-32"
-        />
+        <EncouragementWidget />
 
       </PageContainer>
     </PageShell>

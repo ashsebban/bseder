@@ -27,6 +27,7 @@ import { InlineAddTask, TaskListEmptyState } from "@/features/planner/components
 import { getDailyBacklogEntries, type DailyBacklogEntry } from "@/features/goals/lib/daily-backlog";
 import { OccurrenceItem } from "@/features/planner/components/occurrence-item";
 import { DayScratchpad } from "@/features/calendar/components/day-scratchpad";
+import { getDailyEncouragement } from "@/features/goals/lib/encouragement-catalog";
 
 interface DayFocusProps {
   date: Date;
@@ -302,20 +303,27 @@ function EventBlock({
         uncheckedClassName="bg-white/80"
       />
 
-      {/* Title + time on one row, always */}
-      <div className="min-w-0 flex flex-1 items-center gap-1.5 overflow-hidden">
-        <EditableGoalTitle
-          title={goal.title}
-          onRename={isPrebuiltGoal(goal.id) ? undefined : (nextTitle) => onRenameGoal(goal.id, nextTitle)}
-          className={cn(
-            "min-w-0 flex-1 truncate text-[10.5px] font-semibold leading-none",
-            assignment.completed ? "text-slate-400 line-through decoration-slate-300" : "text-slate-800",
-          )}
-          inputClassName="text-[10.5px] font-semibold"
-        />
-        <span className="shrink-0 text-[9px] tabular-nums leading-none text-slate-400">
-          {timeRange}
-        </span>
+      {/* Title + time + optional location */}
+      <div className="min-w-0 flex flex-1 flex-col justify-center overflow-hidden">
+        <div className="flex items-center gap-1.5">
+          <EditableGoalTitle
+            title={goal.title}
+            onRename={isPrebuiltGoal(goal.id) ? undefined : (nextTitle) => onRenameGoal(goal.id, nextTitle)}
+            className={cn(
+              "min-w-0 flex-1 truncate text-[10.5px] font-semibold leading-none",
+              assignment.completed ? "text-slate-400 line-through decoration-slate-300" : "text-slate-800",
+            )}
+            inputClassName="text-[10.5px] font-semibold"
+          />
+          <span className="shrink-0 text-[9px] tabular-nums leading-none text-slate-400">
+            {timeRange}
+          </span>
+        </div>
+        {assignment.location && heightPx > 44 && (
+          <p className="mt-0.5 truncate text-[9px] leading-none text-slate-400">
+            📍 {assignment.location}
+          </p>
+        )}
       </div>
 
       {/* Remove — hover only */}
@@ -892,6 +900,39 @@ function DayChecklist({
 }
 
 // ─── Main export ──────────────────────────────────────────────────────────────
+function DailyEncouragementCard({ date }: { date: Date }) {
+  const [quote, setQuote] = useState<ReturnType<typeof getDailyEncouragement> | null>(null);
+  useEffect(() => { setQuote(getDailyEncouragement(date)); }, [date]);
+
+  return (
+    <div className="relative overflow-hidden rounded-2xl border border-brand/10 bg-gradient-to-br from-brand/[0.04] via-white to-white shadow-sm">
+      <div className="h-[3px] bg-gradient-to-r from-brand via-brand/60 to-transparent" />
+      <span
+        aria-hidden
+        className="pointer-events-none absolute -top-2 left-3 select-none font-serif text-[6rem] leading-none text-brand/[0.07]"
+      >
+        &ldquo;
+      </span>
+      <div className="relative flex flex-col gap-2.5 px-4 py-4">
+        <p className="text-[9.5px] font-black uppercase tracking-[0.18em] text-brand/40">
+          Encouragement of the Day
+        </p>
+        <blockquote className="text-[12.5px] font-[500] leading-[1.65] text-slate-800">
+          {quote?.text ?? " "}
+        </blockquote>
+        {quote && (
+          <div className="border-t border-slate-100 pt-2">
+            <p className="text-[11px] font-bold text-slate-600">{quote.attribution}</p>
+            {quote.source && (
+              <p className="mt-0.5 text-[10px] text-slate-400">{quote.source}</p>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function DayFocus({
   date,
   relativeLabel,
@@ -938,42 +979,49 @@ export function DayFocus({
   );
 
   return (
-    <div className="grid grid-cols-[1fr_0.8fr_0.8fr] gap-4">
-      <DayTimeline
-        assignments={assignedItems.map((i) => i.assignment)}
-        goals={goals}
-        isoDate={isoDate}
-        onToggle={onToggleAssignment}
-        onUnschedule={onUnscheduleAssignment}
-        onSetDuration={onSetDuration}
-        onRenameGoal={onRenameGoal}
-        zmanim={zmanim}
-        timeFormat={timeFormat}
-        snapMins={timelineSnapMins}
-        defaultDurationMins={timelineDefaultDurationMins}
-        onPreferenceChange={onTimelinePreferenceChange}
-        activeDragWindowBands={activeDragWindowBands}
-      />
-      <DayChecklist
-        date={date}
-        relativeLabel={relativeLabel}
-        metadata={metadata}
-        occurrences={occurrences}
-        isoDate={isoDate}
-        isToday={isToday}
-        timeFormat={timeFormat}
-        onToggleDate={onToggleDate}
-        onToggleAssignment={onToggleAssignment}
-        onRemoveAssignment={onRemoveAssignment}
-        onAddTask={onAddTask}
-        onNavigateToDate={onNavigateToDate}
-        onRenameGoal={onRenameGoal}
-        onReorderGoals={onReorderGoals}
-        zmanim={zmanim}
-        backlogEntriesByGoal={backlogEntriesByGoal}
-        missedBehavior={missedBehavior}
-      />
-      <DayScratchpad isoDate={isoDate} className="h-full" />
+    <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,27fr)_minmax(0,51fr)_minmax(0,22fr)]">
+      <div className="min-w-0">
+        <DayTimeline
+          assignments={assignedItems.map((i) => i.assignment)}
+          goals={goals}
+          isoDate={isoDate}
+          onToggle={onToggleAssignment}
+          onUnschedule={onUnscheduleAssignment}
+          onSetDuration={onSetDuration}
+          onRenameGoal={onRenameGoal}
+          zmanim={zmanim}
+          timeFormat={timeFormat}
+          snapMins={timelineSnapMins}
+          defaultDurationMins={timelineDefaultDurationMins}
+          onPreferenceChange={onTimelinePreferenceChange}
+          activeDragWindowBands={activeDragWindowBands}
+        />
+      </div>
+      <div className="min-w-0">
+        <DayChecklist
+          date={date}
+          relativeLabel={relativeLabel}
+          metadata={metadata}
+          occurrences={occurrences}
+          isoDate={isoDate}
+          isToday={isToday}
+          timeFormat={timeFormat}
+          onToggleDate={onToggleDate}
+          onToggleAssignment={onToggleAssignment}
+          onRemoveAssignment={onRemoveAssignment}
+          onAddTask={onAddTask}
+          onNavigateToDate={onNavigateToDate}
+          onRenameGoal={onRenameGoal}
+          onReorderGoals={onReorderGoals}
+          zmanim={zmanim}
+          backlogEntriesByGoal={backlogEntriesByGoal}
+          missedBehavior={missedBehavior}
+        />
+      </div>
+      <div className="flex min-w-0 flex-col gap-4">
+        <DailyEncouragementCard date={date} />
+        <DayScratchpad isoDate={isoDate} className="flex-1" />
+      </div>
     </div>
   );
 }

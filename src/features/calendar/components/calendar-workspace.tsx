@@ -264,6 +264,10 @@ function SortablePanelGoalItem({
   backlogEntriesByGoal: Map<string, DailyBacklogEntry[]>;
 }) {
   const done = item.completed;
+  const subtitle = [
+    item.source === "assignment" ? item.assignment.location : null,
+    item.programLabel,
+  ].filter(Boolean).join(" · ");
 
   function handleToggle() {
     if (item.source === "assignment") onToggleAssignment(item.actionId);
@@ -321,8 +325,8 @@ function SortablePanelGoalItem({
               compact
             />
           </div>
-          {item.programLabel ? (
-            <p className="mt-1 truncate text-[11px] text-slate-500">{item.programLabel}</p>
+          {subtitle ? (
+            <p className="mt-1 truncate text-[11px] text-slate-500">{subtitle}</p>
           ) : null}
         </div>
       )}
@@ -707,7 +711,15 @@ export function CalendarWorkspace({
     <div className={isMonthView ? "space-y-5" : "space-y-8"}>
       <CalendarHeader
         view={calendar.view}
-        onViewChange={calendar.setView}
+        onViewChange={(v) => {
+          if (calendar.view === "week" && v === "day") {
+            const todayIsoStr = toIsoDate(today);
+            const weekContainsToday = week.days.some((d) => d.iso === todayIsoStr);
+            calendar.setDateAndView(weekContainsToday ? today : week.days[0]!.date, "day");
+            return;
+          }
+          calendar.setView(v);
+        }}
         onPrev={calendar.goToPrevious}
         onNext={calendar.goToNext}
         onToday={calendar.jumpToToday}

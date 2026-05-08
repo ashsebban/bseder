@@ -56,6 +56,8 @@ export interface DayAssignment {
    * the preferred day suppressed.
    */
   skipped?: boolean;
+  /** Optional location label shown on the timeline card (e.g. shul address from the Shuls finder) */
+  location?: string;
 }
 
 export interface DayAssignmentsStorageUpdatedDetail {
@@ -115,6 +117,7 @@ const DayAssignmentSchema = z.object({
   generated: z.boolean().optional(),
   disabled: z.boolean().optional(),
   skipped: z.boolean().optional(),
+  location: z.string().optional(),
 });
 
 const DayAssignmentsArraySchema = z.array(DayAssignmentSchema);

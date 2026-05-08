@@ -148,10 +148,11 @@ export function OccurrenceItem({
   const amountLabel = goal.type === "quantified" && item.displayAmount > 0
     ? `${item.displayAmount}${goal.targetUnit ? ` ${goal.targetUnit}` : ""}`
     : null;
+  const locationLabel = item.source === "assignment" ? item.assignment.location : null;
   // Only show countdown text when it adds time-specific info ("starts in X", "ends in X").
   // "expired" / "not yet" / "done before deadline" are already communicated by the status pill.
   const stateLabel = countdown?.label?.includes(" in ") ? countdown.label : null;
-  const subtitle = [item.programLabel, cadenceHint, amountLabel, stateLabel]
+  const subtitle = [locationLabel, item.programLabel, cadenceHint, amountLabel, stateLabel]
     .filter(Boolean)
     .join(" · ");
 
