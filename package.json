@@ -4,10 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "NEXT_DIST_DIR=.next-dev next dev",
-    "build": "NEXT_DIST_DIR=.next-prod next build",
+    "build": "prisma generate && NEXT_DIST_DIR=.next-prod next build",
     "start": "NEXT_DIST_DIR=.next-prod next start",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
-    "test:unit": "rm -rf .test-dist && tsc -p tsconfig.tests.json && node --test .test-dist/tests"
+    "test:unit": "rm -rf .test-dist && tsc -p tsconfig.tests.json && node --test .test-dist/tests/*.test.js"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

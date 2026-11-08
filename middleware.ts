@@ -13,7 +13,14 @@ import { getToken } from "next-auth/jwt";
 export default async function middleware(req: NextRequest) {
   const { nextUrl } = req;
   const path = nextUrl.pathname;
-  const token = await getToken({ req, secret: process.env.AUTH_SECRET });
+  // Match NextAuth's cookie naming, including an HTTPS public origin when a
+  // reverse proxy forwards requests to this app over HTTP.
+  const authUrl = process.env.AUTH_URL ?? process.env.NEXTAUTH_URL ?? nextUrl.href;
+  const token = await getToken({
+    req,
+    secret: process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET,
+    secureCookie: new URL(authUrl).protocol === "https:",
+  });
   const session = token
     ? {
         user: {
