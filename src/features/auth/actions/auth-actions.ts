@@ -73,8 +73,13 @@ export async function requestPasswordReset(
     data: { identifier: normalizedEmail, token, expires },
   });
 
-  const resetUrl = `${process.env.NEXTAUTH_URL ?? "http://localhost:3000"}/auth/reset-password?token=${token}&email=${encodeURIComponent(normalizedEmail)}`;
-  await sendPasswordResetEmail(normalizedEmail, resetUrl);
+  const resetUrl = new URL(
+    "/auth/reset-password",
+    process.env.AUTH_URL ?? process.env.NEXTAUTH_URL ?? "http://localhost:3000",
+  );
+  resetUrl.searchParams.set("token", token);
+  resetUrl.searchParams.set("email", normalizedEmail);
+  await sendPasswordResetEmail(normalizedEmail, resetUrl.toString());
 
   await db.adminEvent.create({
     data: { type: "password-reset", userEmail: normalizedEmail, details: "Reset email sent" },

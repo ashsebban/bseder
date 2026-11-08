@@ -2,10 +2,15 @@
 // Used for password reset emails.
 import { Resend } from "resend";
 
-export const resend = new Resend(process.env.RESEND_API_KEY);
-
 export async function sendPasswordResetEmail(email: string, resetUrl: string) {
-  await resend.emails.send({
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
+    throw new Error("RESEND_API_KEY is required to send password reset emails.");
+  }
+
+  // Build and import this module without requiring runtime email credentials.
+  const resend = new Resend(apiKey);
+  const { error } = await resend.emails.send({
     from: process.env.RESEND_FROM ?? "B'Seder <noreply@beseder.app>",
     to: email,
     subject: "Reset your B'Seder password",
@@ -26,4 +31,8 @@ export async function sendPasswordResetEmail(email: string, resetUrl: string) {
       </div>
     `,
   });
+
+  if (error) {
+    throw new Error(`Failed to send password reset email: ${error.message}`);
+  }
 }

@@ -1,5 +1,9 @@
 {
   "extends": "./tsconfig.json",
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
-  "exclude": ["node_modules", ".next"]
+  "compilerOptions": {
+    "tsBuildInfoFile": ".next-dev/cache/tsconfig.typecheck.tsbuildinfo",
+    "types": ["node", "react", "react-dom", "next", "next/image-types/global"]
+  },
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules", "next-env.d.ts", ".next", ".next-dev", ".next-prod", ".test-dist"]
 }
